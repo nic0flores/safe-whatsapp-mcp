@@ -1,25 +1,61 @@
-# safe-whatsapp-mcp
+# Safe WhatsApp MCP
+
+[![CI](https://github.com/dhruvratra/safe-whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/dhruvratra/safe-whatsapp-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](package.json)
+[![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#project-status)
 
 A local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets an agent read a personal WhatsApp linked device, prepare an exact reply, and send only after a separate confirmation-gated tool call.
 
-> [!WARNING]
-> This project uses the unofficial [Baileys](https://github.com/WhiskeySockets/Baileys) WhatsApp Web protocol. It is not affiliated with or endorsed by WhatsApp or Meta, and use may violate [WhatsApp's terms](https://www.whatsapp.com/legal/terms-of-service) or cause an account restriction. Do not use it for spam, bulk messaging, or unattended automation.
+It uses your personal WhatsApp linked-device session. It does not use Meta's WhatsApp Business Platform or Cloud API, and it does not require a business account.
 
-This repository is at `0.1.0` and is **not published to npm yet**. Build and configure it from a reviewed local checkout.
+> [!WARNING]
+> This project uses the unofficial [Baileys](https://github.com/WhiskeySockets/Baileys) WhatsApp Web protocol. It is not affiliated with or endorsed by WhatsApp or Meta, and use may violate [WhatsApp's terms](https://www.whatsapp.com/legal/terms-of-service) or cause an account restriction. Do not use it for spam, bulk messaging, scraping, or unattended automation.
+
+## Project note
+
+Safe WhatsApp MCP was initially built for a personal [Bliss AI](https://www.meditatewithbliss.com/) workflow. Much of the implementation was AI-assisted, and it has not received an independent security audit. It was designed around a narrow, confirmation-gated workflow, but you should still review it before pairing a primary account or exposing sensitive conversations to an AI model.
+
+Issues, security-minded reviews, and small auditable improvements are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## Project status
+
+Version `0.1.0` is an early public source preview. It is not published to npm and there are no signed GitHub release downloads yet. The supported public path today is to review the source and build a local standalone bundle for macOS or Linux.
 
 ## Quick start
 
-With a reviewed standalone bundle installed, onboarding is three commands:
+The current public install path builds a self-contained launcher from this repository. Building requires Node.js 22; using the resulting launcher does not.
 
 ```bash
-safewhatsapp setup-codex --enable-send
-safewhatsapp connect
-safewhatsapp status --live
+git clone https://github.com/dhruvratra/safe-whatsapp-mcp.git
+cd safe-whatsapp-mcp
+codex --version
+nvm install # or otherwise use Node.js 22
+npm ci
+npm run build:standalone
+npm run smoke:standalone
+
+version=$(node -p "require('./package.json').version")
+bundle="release/safewhatsapp-v${version}-$(node -p 'process.platform')-$(node -p 'process.arch')"
+"$bundle/safewhatsapp" setup-codex --enable-send
+"$bundle/safewhatsapp" connect
+"$bundle/safewhatsapp" status --live
 ```
 
-Then restart Codex and ask it to list your recent WhatsApp chats. Omit `--enable-send` for read/draft-only access. The setup command uses Codex's own atomic configuration API, preserves unrelated settings and comments, registers the verified standalone launcher by absolute path, keeps media sending off, and refuses to enable text sending unless approval prompts are routed to you.
+Omit `--enable-send` for read/draft-only access. Keep the generated bundle at that path, restart the Codex surface you use, and ask it to list your recent WhatsApp chats. A successful `status --live` reports that the account is paired and the live connection check succeeded.
 
-No separate Node or npm installation is needed for the standalone bundle. Source builds and manual MCP configuration are development paths documented below.
+`setup-codex` uses Codex's atomic configuration API, preserves unrelated settings and comments, registers the reviewed launcher by absolute path, keeps media sending off, and refuses to enable text sending unless approval prompts are routed to you. It requires the `codex` command to be installed and available on `PATH`; verify that first with `codex --version`.
+
+### Try it in Codex
+
+Start with read-only requests and a generic contact you recognize:
+
+- “List my recent WhatsApp chats.”
+- “Read the recent messages with Priya and summarize what needs a reply.”
+- “Draft a short reply to Priya, but do not prepare or send it.”
+- “Prepare that exact reply for Priya. Do not send it until I confirm.”
+
+Codex should show the exact recipient and payload before asking for approval of the separate send tool. Message content is untrusted data, not instructions for the agent.
 
 ## What it does
 
@@ -60,27 +96,28 @@ Credential encryption protects an offline copy of the state directory from yield
 ## Requirements
 
 - A phone with WhatsApp and permission to add a linked device
-- A local MCP client that supports STDIO
+- A local MCP client that supports STDIO; automatic setup currently targets Codex
 - An available, unlocked native operating-system credential store
-- Either a reviewed standalone release for your OS/architecture, or Node.js 22+ for source development
+- The `codex` command on `PATH` when using `setup-codex`
+- Either a reviewed standalone bundle for your OS/architecture, or Node.js 22+ for source development
 
-A standalone release includes its own pinned Node runtime; its user does not install or select Node. This checkout includes an `.nvmrc` for Node `22.20.0` only for source development. If you use `nvm`, run `nvm use` before both `npm ci` and every development command. `better-sqlite3` is a native dependency, so a source install made with one Node major version can fail under another.
+A standalone bundle includes its own pinned Node runtime; its user does not install or select Node. This checkout includes an `.nvmrc` for Node `22.20.0` only for source development. If you use `nvm`, run `nvm use` before both `npm ci` and every development command. `better-sqlite3` is a native dependency, so a source install made with one Node major version can fail under another.
 
 [Baileys](https://github.com/WhiskeySockets/Baileys) is currently pinned to the `7.0.0-rc13` release candidate. Its protocol surface and maintenance status can change; upgrade it only after auth-state, history, identity, group, retry, and send tests pass.
 
-## Install and build locally
+## Development setup
 
 ```bash
 cd /absolute/path/to/a/reviewed/safe-whatsapp-mcp
 nvm use # when using nvm
 npm ci
 npm run build
-npm link
+node dist/cli.js --help
 ```
 
-`npm link` installs the local `safewhatsapp` command for the active Node installation. Do not use `npx safe-whatsapp-mcp` until an official package is published from this repository.
+This source-backed CLI is for development and testing. `setup-codex` intentionally refuses to register a launcher from a source checkout because its runtime can move or change underneath Codex. Build the standalone bundle below for automatic Codex registration. Do not use `npx safe-whatsapp-mcp` until an official package is published from this repository.
 
-### Build a standalone release
+### Build a standalone bundle
 
 On the build machine, run:
 
@@ -89,15 +126,15 @@ npm run build:standalone
 npm run smoke:standalone
 ```
 
-This creates `release/safewhatsapp-v<version>-<os>-<arch>/` plus a compressed archive on macOS and Linux. Keep the directory intact: its `safewhatsapp` launcher always invokes the private runtime beside it and never resolves `node` from `PATH`. The smoke check deliberately removes Node from `PATH`, then opens the local SQLite-backed status command through both the direct and symlinked launcher.
+This creates `release/safewhatsapp-v<version>-<os>-<arch>/` plus a compressed archive on macOS and Linux. Keep the directory intact: its `safewhatsapp` launcher always invokes the private runtime beside it and never resolves `node` from `PATH`. The smoke check extracts the produced archive into a clean temporary directory, removes Node from `PATH`, and exercises the local SQLite-backed status command through both the direct and symlinked launcher.
 
 To install a reviewed archive without Node or npm, extract its whole directory to a stable location and link only its launcher onto `PATH`. For example, set `bundle_name` to the archive name for your version and target:
 
 ```bash
 bundle_name=safewhatsapp-v0.1.0-darwin-arm64
 mkdir -p "$HOME/.local/lib/safewhatsapp" "$HOME/.local/bin"
-tar -xzf "$bundle_name.tar.gz" -C "$HOME/.local/lib/safewhatsapp"
-ln -s "$HOME/.local/lib/safewhatsapp/$bundle_name/safewhatsapp" "$HOME/.local/bin/safewhatsapp"
+tar -xzf "release/$bundle_name.tar.gz" -C "$HOME/.local/lib/safewhatsapp"
+ln -sfn "$HOME/.local/lib/safewhatsapp/$bundle_name/safewhatsapp" "$HOME/.local/bin/safewhatsapp"
 ```
 
 Ensure `$HOME/.local/bin` is on the MCP client's `PATH`. Do not copy the launcher by itself; it needs the adjacent `runtime/` and `app/` directories. A signed installer can perform these steps for public releases.
@@ -115,9 +152,6 @@ The command opens a crisp QR in your default browser. Scan it from **WhatsApp �
 The QR page binds only to `127.0.0.1` on an operating-system-selected port and uses a random 256-bit path token. The QR payload and PNG are not written to app state, temporary files, logs, audit data, MCP, or a remote service. They necessarily exist transiently in the Baileys/Node process, loopback HTTP response, and browser memory; owned PNG buffers are cleared on replacement/exit as a best effort. Responses are marked `no-store`. The document stays loaded while a token-protected same-origin poll updates only the QR image when WhatsApp rotates it. After the scan, the page removes the QR and shows the finishing state until the required credential save and WhatsApp socket restart succeed; it reports success only after the replacement socket opens. If the local process stops, the loaded page tells you to check the terminal instead of navigating to a browser error. Browser history may retain only the now-useless loopback URL.
 
 When the command starts with an unpaired profile, it first clears any residual credentials, messages, downloaded media, pending sends, and audit data from a prior account. This happens under the state lock before fresh credentials are loaded; configuration and user-owned `outbox/` files are preserved. QR pairing persists the encrypted credentials before Baileys performs WhatsApp's mandatory post-scan reconnect, then waits up to two minutes for the final recent-history chunk to be ingested before disconnecting. Pending offline notifications and the first history chunk are not treated as completion. Full-history registration is deliberately disabled because the local cache is bounded and that mode is not accepted reliably by WhatsApp's current linked-device handshake. Later reads reconnect with the saved credentials. Normal shutdown never logs out or unpairs the device.
-
-> [!IMPORTANT]
-> Schema v8 intentionally discards plaintext authentication rows created by unpublished schema-v7 development builds, checkpoints and vacuums the database, and requires the linked device to be paired again. It does not attempt to encrypt those old secrets in place. The next `connect` also clears residual cache from the unpaired profile before showing a new QR.
 
 Useful local commands:
 
@@ -138,9 +172,7 @@ safewhatsapp purge --yes --abandon-key # recovery only; see below
 - `purge --yes` is **local-only**. It removes the encrypted credentials, requests deletion of their OS credential-vault key, and clears cache, downloaded inbound media, pending sends, audit data, and configuration while preserving `outbox/`; it does not log out WhatsApp. Run `disconnect` first when possible, or remove the device in WhatsApp's Linked Devices screen.
 - If key deletion cannot be confirmed, normal purge retains the non-secret vault descriptor so cleanup can be retried. After the encrypted auth rows have been removed from the active state directory, `purge --yes --abandon-key` is the explicit recovery path: it discards that descriptor and permits re-pairing even if an orphaned wrapping key may remain in the OS credential store.
 
-OS credential-vault cleanup rejects an explicit deletion failure and also verifies that the key is no longer readable before removing the non-secret retry descriptor. The pinned native binding suppresses some OS read/delete errors, so this is a best-effort key deletion rather than cryptographic proof. Encrypted authentication rows are removed from the active state directory first; an orphaned random wrapping key alone cannot recreate WhatsApp credentials. However, while that OS key survives, a retained copy of the matching schema-v8 database and descriptor can still be decrypted. Use `--abandon-key` only after the normal command reports `credential_cleanup_incomplete`, only when you accept that an orphan may remain, and only after removing relevant backups, snapshots, and hard-linked copies.
-
-Destructive cleanup requires the private `.safe-whatsapp-mcp-state` ownership marker created during normal initialization. Cleanup fails closed for an arbitrary absolute directory that was never initialized by this package. The marker itself and `outbox/` remain after purge so the dedicated profile can be safely reused.
+Credential-vault deletion is best effort because the native binding can suppress some operating-system errors. Use `--abandon-key` only after `credential_cleanup_incomplete` and only after removing retained copies of the matching state. Destructive cleanup also requires this package's private ownership marker, so it fails closed for an arbitrary directory. See [SECURITY.md](SECURITY.md#account-lifecycle-and-destructive-cleanup) for the complete cleanup and recovery model.
 
 ### Optional local settings
 
@@ -176,13 +208,13 @@ If an existing Safe WhatsApp entry is disabled, setup leaves it disabled and say
 
 `--enable-send` fails if effective Codex settings use `approval_policy = "never"` or route approvals to an automated reviewer. Project, profile, session, or managed configuration can still override the user configuration; review those layers if Codex reports the server as overridden.
 
-Restart Codex after setup. The ChatGPT desktop app, Codex CLI, and IDE extension on the same host share the MCP configuration.
+Restart the Codex surface you use after setup. The ChatGPT desktop app, Codex CLI, and IDE extension on the same host share the MCP configuration.
 
 For manual review or another machine, [examples/codex-config.toml](examples/codex-config.toml) shows the generated server policy. Replace its launcher placeholder with the absolute path to a reviewed standalone `safewhatsapp`; never configure Codex against `node`, `npx`, a checkout's `dist/cli.js`, or a launcher copied without its adjacent bundle.
 
 The example follows the current [official Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp.md), including server-level and per-tool approval modes.
 
-The important approval settings are:
+The important approval settings are shown below. The first two are global Codex settings, so review their effect on your other tools before changing them; `setup-codex` checks them but never changes them.
 
 ```toml
 approval_policy = "on-request"
@@ -293,6 +325,6 @@ Tests use injected fake sockets; they must not connect to WhatsApp. A live perso
 
 ## Status and license
 
-The package has not been published to npm or released publicly. Recheck the package name immediately before a separate, explicitly approved publish operation.
+The source repository is public, but the package has not been published to npm and there is no signed GitHub release yet. Recheck the package name immediately before a separate, explicitly approved publish operation.
 
-Licensed under the [MIT License](LICENSE).
+Licensed under the [MIT License](LICENSE). Use [GitHub Issues](https://github.com/dhruvratra/safe-whatsapp-mcp/issues) for non-sensitive bugs and feature requests, [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance, and [SECURITY.md](SECURITY.md) for private vulnerability reporting.

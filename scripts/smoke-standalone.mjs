@@ -1,4 +1,4 @@
-// Agent context note: Proves the standalone launcher can load SQLite/Keychain code, validate its own setup identity, and run the CLI without any node executable on PATH. Tests: run via npm run smoke:standalone after build:standalone. Never use a real WhatsApp profile, Codex config, or credential store entry; update this note after meaningful changes.
+// Agent context note: Extracts the produced standalone archive into a clean temporary directory, then proves its launcher can load native code, validate its own setup identity, and run without node on PATH. Tests: run via npm run smoke:standalone after build:standalone. Never use a real WhatsApp profile, Codex config, or credential store entry; update this note after meaningful changes.
 import { execFile as execFileCallback } from "node:child_process";
 import { access, mkdtemp, mkdir, readFile, readdir, rm, symlink } from "node:fs/promises";
 import os from "node:os";
@@ -17,16 +17,29 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
 assertStandalonePlatform(process.platform);
 const bundleName = standaloneBundleName(packageJson.version, process.platform, process.arch);
-const bundleRoot = path.join(projectRoot, "release", bundleName);
-const launcher = path.join(bundleRoot, standaloneExecutableName(process.platform));
+const archive = path.join(projectRoot, "release", `${bundleName}.tar.gz`);
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "safewhatsapp-standalone-smoke-"));
+const extractionRoot = path.join(temporaryRoot, "extracted");
+const bundleRoot = path.join(extractionRoot, bundleName);
+const launcher = path.join(bundleRoot, standaloneExecutableName(process.platform));
 
 try {
+  await mkdir(extractionRoot, { mode: 0o700 });
+  const tar = await firstExisting(["/usr/bin/tar", "/bin/tar"], "tar");
+  await access(archive);
+  await execFile(tar, ["-xzf", archive, "-C", extractionRoot], {
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 300_000,
+  });
+  const extractedEntries = await readdir(extractionRoot);
+  if (extractedEntries.length !== 1 || extractedEntries[0] !== bundleName) {
+    throw new Error("Standalone archive must contain exactly its target bundle directory.");
+  }
   await access(launcher);
   await assertBundleContainsNoLocalState(bundleRoot);
   const isolatedPath = path.join(temporaryRoot, "isolated-path");
   await mkdir(isolatedPath, { mode: 0o700 });
-  const readlink = await firstExisting(["/usr/bin/readlink", "/bin/readlink"]);
+  const readlink = await firstExisting(["/usr/bin/readlink", "/bin/readlink"], "readlink");
   await symlink(readlink, path.join(isolatedPath, "readlink"));
   const state = path.join(temporaryRoot, "state");
   const env = {
@@ -91,7 +104,7 @@ try {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
 
-process.stdout.write(`Standalone smoke OK without node on PATH: ${bundleName}\n`);
+process.stdout.write(`Standalone archive smoke OK without node on PATH: ${path.basename(archive)}\n`);
 
 function runLauncher(command, args, env) {
   return execFile(command, args, { cwd: bundleRoot, env, timeout: 30_000 });
@@ -111,7 +124,7 @@ function importBundledNativeModule(relativePath, env) {
   ], { cwd: bundleRoot, env, timeout: 30_000 });
 }
 
-async function firstExisting(candidates) {
+async function firstExisting(candidates, name) {
   for (const candidate of candidates) {
     try {
       await access(candidate);
@@ -120,7 +133,7 @@ async function firstExisting(candidates) {
       // Try the next standard system path.
     }
   }
-  throw new Error("The standalone smoke test could not find readlink.");
+  throw new Error(`The standalone smoke test could not find ${name}.`);
 }
 
 async function assertBundleContainsNoLocalState(root) {

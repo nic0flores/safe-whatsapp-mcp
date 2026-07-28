@@ -1,8 +1,9 @@
 # `safewhatsapp setup-codex` is preferred because it preserves the existing file.
 # For manual setup, replace the launcher below with the reviewed standalone path.
-
-approval_policy = "on-request"
-approvals_reviewer = "user"
+# Sending also requires effective global Codex settings that route approvals to
+# the user. setup-codex checks these settings but never changes them:
+# approval_policy = "on-request"
+# approvals_reviewer = "user"
 
 [mcp_servers.safe_whatsapp]
 command = "/absolute/path/to/reviewed/standalone/safewhatsapp"

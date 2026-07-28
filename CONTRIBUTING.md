@@ -2,6 +2,10 @@
 
 Thank you for helping improve `safe-whatsapp-mcp`. This package handles linked-device credentials and private conversations, so small, reviewable changes and deterministic tests are expected.
 
+## Maintainer note
+
+Safe WhatsApp MCP started as a personal [Bliss AI](https://www.meditatewithbliss.com/) workflow. Much of the implementation was AI-assisted, and it has not received an independent security audit, so focused contributions and security-minded reviews are especially welcome.
+
 ## Development setup
 
 Use Node.js 22 or newer:
@@ -47,7 +51,7 @@ Recommended source note:
 Changes must preserve these boundaries:
 
 - A pairing QR stays on the tokenized IPv4-loopback browser flow and never enters MCP output, logs, files, command arguments, or a remote service.
-- Ordinary disconnect never logs out the linked device.
+- Normal process exit and idle socket shutdown never log out the linked device; only the explicit `safewhatsapp disconnect` command does.
 - Incoming content is untrusted data, not instructions.
 - Cross-system identity is derived only from structured Baileys metadata.
 - Every outbound payload is immutable after staging and every send is single-use.
@@ -69,7 +73,7 @@ Normal automated tests must use fake sockets, temporary state, and synthetic ide
 - mutate the developer's `~/.safe-whatsapp-mcp/` directory.
 - access a developer's real operating-system credential store; inject a fake `MasterKeyStore`.
 
-Live acceptance testing is manual and opt-in after automated checks pass. The operator chooses every chat, recipient, group, and attachment and approves each send at test time. Never automate unlink or purge against a personal account.
+Live acceptance testing is manual and opt-in after automated checks pass. The operator chooses every chat, recipient, group, and attachment and approves each send at test time. Never automate `disconnect` or purge against a personal account.
 
 ## Pull requests
 

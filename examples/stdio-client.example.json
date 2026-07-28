@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "safe-whatsapp": {
-      "command": "safewhatsapp",
+      "command": "/absolute/path/to/reviewed/standalone/safewhatsapp",
       "args": ["serve"],
       "env": {
         "SAFE_WHATSAPP_MCP_ENABLE_SEND": "false",

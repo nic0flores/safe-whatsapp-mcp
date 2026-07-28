@@ -2,9 +2,30 @@
 
 `safe-whatsapp-mcp` controls a linked device for a personal WhatsApp account. A compromise may expose private conversations or permit messages to be sent as the user. Review this document before pairing a primary account.
 
-## Project status
+## Project context
 
-Version `0.1.0` is under initial development and has not been published. Until a public repository is available, report suspected vulnerabilities privately to the maintainer through an existing trusted contact channel. After publication, use the repository's private GitHub Security Advisory flow. Do not include credentials, QR data, Signal keys, message content, phone numbers, or personal media in a public issue.
+Safe WhatsApp MCP was initially built for a personal [Bliss AI](https://www.meditatewithbliss.com/) workflow. Much of the implementation was AI-assisted, and it has not received an independent security audit. Security-minded review is welcome, but the project should still be treated as experimental.
+
+## Supported versions
+
+Version `0.1.0` is an early public source preview. It is not published to npm and there are no signed release downloads. Until the first tagged release, security fixes apply to the current `main` branch only. After tagged releases begin, fixes will target the latest published minor version.
+
+## Reporting vulnerabilities
+
+Please report suspected vulnerabilities privately through [GitHub's security advisory flow](https://github.com/dhruvratra/safe-whatsapp-mcp/security/advisories/new). If that flow is unavailable, contact the maintainer through an existing trusted private channel. Do not open a public issue for an unpatched vulnerability.
+
+Include:
+
+- the affected version or commit;
+- the impact and affected security boundary;
+- minimal reproduction steps using synthetic data; and
+- whether credentials, messages, phone numbers, recipient data, or media may be exposed.
+
+Never include real credentials, QR data, Signal keys, message content, phone numbers, contact or group names, or personal media in a report.
+
+## Response expectations
+
+The maintainer aims to acknowledge reports within five business days, triage severity, and provide a fix or mitigation plan when an issue is confirmed. Please allow a reasonable remediation window before public disclosure.
 
 ## Unofficial integration risk
 
@@ -42,9 +63,9 @@ Treat write access to the state directory as highly sensitive. A writer can tamp
 
 ## Account lifecycle and destructive cleanup
 
-`safewhatsapp unlink` is the preferred removal path. After confirmation it sends WhatsApp a remote logout request when a paired local credential exists, then clears every account-bound SQLite table plus downloaded media, staged sends/snapshots, and audit data and requests deletion of the profile's master key from the OS credential store. Configuration and user-owned `outbox/` files are preserved. Baileys does not expose a server acknowledgement for the logout request, so verify **WhatsApp → Settings → Linked Devices** on the phone. Local cleanup still occurs when there is no paired credential or when a remote logout request fails after credential loading; in either case, remove the device manually if it remains listed because local credentials are no longer available for another attempt. If encrypted auth rows cannot be opened because the OS credential store is locked or unavailable, the command fails closed: unlock the store and retry, or purge locally and remove the linked device from the phone.
+`safewhatsapp disconnect` is the preferred removal path. It runs without a typed confirmation, sends WhatsApp a remote logout request when a paired local credential exists, then clears every account-bound SQLite table plus downloaded media, staged sends/snapshots, and audit data and requests deletion of the profile's master key from the OS credential store. Configuration and user-owned `outbox/` files are preserved. Baileys does not expose a server acknowledgement for the logout request, so verify **WhatsApp → Settings → Linked Devices** on the phone. Local cleanup still occurs when there is no paired credential or when a remote logout request fails after credential loading; in either case, remove the device manually if it remains listed because local credentials are no longer available for another attempt. If encrypted auth rows cannot be opened because the OS credential store is locked or unavailable, the command fails closed: unlock the store and retry, or purge locally and remove the linked device from the phone. `safewhatsapp unlink` remains an undocumented compatibility alias.
 
-`safewhatsapp purge --yes` is local-only and does **not** log out the linked WhatsApp device. It removes the encrypted auth rows, requests deletion of their OS credential-vault key, and clears the local cache and configuration while preserving `outbox/`. Unlink first when possible. If you already purged, remove the device from the phone's Linked Devices screen.
+`safewhatsapp purge --yes` is local-only and does **not** log out the linked WhatsApp device. It removes the encrypted auth rows, requests deletion of their OS credential-vault key, and clears the local cache and configuration while preserving `outbox/`. Disconnect first when possible. If you already purged, remove the device from the phone's Linked Devices screen.
 
 The application treats an explicit native deletion failure or a still-readable key as incomplete cleanup and retains `credential-vault.json` for retry. If repeated cleanup cannot be confirmed, `safewhatsapp purge --yes --abandon-key` explicitly removes that non-secret retry descriptor after the authentication ciphertext has been removed from the active state directory, allowing a new vault to be created. This may leave an orphaned wrapping key in the OS store.
 
@@ -91,8 +112,8 @@ Inbound media persists only a bounded WhatsApp `directPath` and media key, never
 - Keep the private standalone Node runtime (or source-install Node.js) and reviewed pinned dependencies current.
 - Do not expose the STDIO process as a network service.
 - Keep stdout exclusively for MCP protocol messages; send sanitized diagnostics to stderr.
-- Inspect Linked Devices in WhatsApp regularly and unlink anything unexpected.
-- Use `safewhatsapp unlink` before deleting or purging local state; local deletion alone cannot revoke a linked device.
+- Inspect Linked Devices in WhatsApp regularly and remove anything unexpected.
+- Use `safewhatsapp disconnect` before deleting or purging local state; local deletion alone cannot revoke a linked device.
 - Leave send flags disabled when using read-only workflows.
 - Never automatically retry a send whose network result is uncertain.
 - Keep persistent Baileys message retry lookup disabled; reconnect-time retries must not relay messages that bypassed this package's staged-send confirmation.
@@ -107,7 +128,7 @@ Diagnostics and audit records must not contain message text, captions, QR conten
 If secrets or private content are exposed:
 
 1. Stop the MCP server.
-2. Unlink the device from WhatsApp's Linked Devices screen.
+2. Remove the device from WhatsApp's Linked Devices screen.
 3. Move the compromised state out of use and pair fresh credentials only after the cause is fixed.
 4. Treat exposed conversation data according to the affected people's privacy requirements.
 

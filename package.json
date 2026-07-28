@@ -1,7 +1,7 @@
 {
   "name": "safe-whatsapp-mcp",
   "version": "0.1.0",
-  "description": "Local, confirmation-gated MCP access to a personal WhatsApp linked device.",
+  "description": "Security-focused local MCP server for reading and confirmation-gated replies through a personal WhatsApp linked device.",
   "type": "module",
   "bin": {
     "safewhatsapp": "dist/cli.js"
@@ -31,7 +31,10 @@
     "mcp",
     "model-context-protocol",
     "whatsapp",
+    "whatsapp-web",
+    "linked-device",
     "baileys",
+    "privacy",
     "personal-assistant",
     "human-in-the-loop"
   ],

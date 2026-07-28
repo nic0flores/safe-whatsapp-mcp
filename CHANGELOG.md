@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented here. The project follows [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - Unreleased
+## 0.1.0 - Unreleased
 
 ### Added
 
@@ -32,7 +32,7 @@ All notable changes to this project will be documented here. The project follows
 
 - Outbound sending defaults off and requires both deployment flags and a staged payload.
 - Baileys credential payloads and Signal-key values are encrypted with AES-256-GCM using a random master key held in the native OS credential store; message, media, draft, and audit caches remain plaintext with private permissions.
-- Unlink and fresh pairing isolate accounts by clearing all account-bound tables/files while preserving configuration and the user outbox.
+- Disconnect and fresh pairing isolate accounts by clearing all account-bound tables/files while preserving configuration and the user outbox.
 - Local purge is explicitly non-revoking and destructive cleanup requires a package ownership marker.
 - Recipient resolution is bound to the requested E.164 number, and approval previews visibly escape invisible Unicode controls.
 - Retained media discards message-supplied hosts, signature-checks inline bytes, and reauthorizes after asynchronous download/cache boundaries.
@@ -42,5 +42,3 @@ All notable changes to this project will be documented here. The project follows
 - Chat deletion is monotonic against queued/history replay, and account cleanup removes stale SQLite rollback journals.
 - Direct-message deletion, clear, and edit state is reconciled across verified PN/LID aliases, including late mappings.
 - Codex registration upgrades accept only an older private bundle with the exact recognized launcher and matching bounded package/bundle metadata; arbitrary same-name MCP commands remain conflicts.
-
-[0.1.0]: https://github.com/dhruvratra/safe-whatsapp-mcp/releases/tag/v0.1.0

@@ -23,16 +23,19 @@ release/
 .safe-whatsapp-mcp/
 .safe-whatsapp-mcp-state
 /config.json
-/credential-vault.json
-/state.sqlite3
-/state.sqlite3-*
-/process.lock
-/process.lock.*
+credential-vault.json
+state.sqlite3
+state.sqlite3-*
+process.lock
+process.lock.*
 /audit.log
 /pending/
 /media/
 /outbox/
-/.safe-whatsapp-codex-setup.lock*
+.safe-whatsapp-codex-setup.lock*
+
+# Custom state-directory names cannot be ignored safely; keep every
+# SAFE_WHATSAPP_MCP_STATE_DIR outside repositories and synchronized folders.
 
 # Logs and temporary files
 *.log

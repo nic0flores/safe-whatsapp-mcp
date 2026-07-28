@@ -1,4 +1,4 @@
-// Agent context note: Covers safe, atomic Codex registration orchestration and standalone self-verification. The JSONL transport itself is tested in test/codex-app-server.test.mjs; update this note after meaningful changes.
+// Agent context note: Covers safe, atomic Codex registration orchestration and standalone self-verification on supported standalone platforms; Windows skips this suite because standalone packaging is not implemented there. The JSONL transport itself is tested in test/codex-app-server.test.mjs; update this note after meaningful changes.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -16,7 +16,12 @@ import { setupCodex } from "../dist/codex/setupCodex.js";
 import { WHATSAPP_TOOL_NAMES } from "../dist/mcp/tools.js";
 import { standaloneLauncher } from "../scripts/standalone-layout.mjs";
 
-test("fresh Codex setup is read-only by default and idempotent", async () => {
+const windowsStandaloneUnavailable = process.platform === "win32"
+  ? "Standalone bundles and setup-codex are not implemented on Windows"
+  : false;
+const setupCodexTest = (name, run) => test(name, { skip: windowsStandaloneUnavailable }, run);
+
+setupCodexTest("fresh Codex setup is read-only by default and idempotent", async () => {
   const fixture = await setupFixture();
   try {
     const first = await setupCodex(fixture.options());
@@ -47,7 +52,7 @@ test("fresh Codex setup is read-only by default and idempotent", async () => {
   }
 });
 
-test("text sending requires explicit opt-in and human-routed Codex approvals", async () => {
+setupCodexTest("text sending requires explicit opt-in and human-routed Codex approvals", async () => {
   const fixture = await setupFixture();
   try {
     const enabled = await setupCodex(fixture.options({ enableSend: true }));
@@ -76,7 +81,7 @@ test("text sending requires explicit opt-in and human-routed Codex approvals", a
   }
 });
 
-test("compatible entries preserve stricter and unrelated server settings", async () => {
+setupCodexTest("compatible entries preserve stricter and unrelated server settings", async () => {
   const fixture = await setupFixture();
   try {
     const alias = path.join(fixture.root, "launcher-alias");
@@ -108,7 +113,7 @@ test("compatible entries preserve stricter and unrelated server settings", async
   }
 });
 
-test("Codex setup rejects server-name collisions without writing", async () => {
+setupCodexTest("Codex setup rejects server-name collisions without writing", async () => {
   const fixture = await setupFixture();
   try {
     const other = path.join(fixture.root, "other-launcher");
@@ -127,7 +132,7 @@ test("Codex setup rejects server-name collisions without writing", async () => {
   }
 });
 
-test("Codex setup safely replaces a recognized older standalone bundle", async () => {
+setupCodexTest("Codex setup safely replaces a recognized older standalone bundle", async () => {
   const fixture = await setupFixture();
   try {
     const oldExecutable = await createRecognizedBundle(fixture.root, "0.0.9");
@@ -162,7 +167,7 @@ test("Codex setup safely replaces a recognized older standalone bundle", async (
   }
 });
 
-test("Codex setup canonicalizes allowed CODEX_HOME ancestor aliases", async () => {
+setupCodexTest("Codex setup canonicalizes allowed CODEX_HOME ancestor aliases", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-codex-canonical-"));
   try {
     const realParent = path.join(root, "real-parent");
@@ -194,7 +199,7 @@ test("Codex setup canonicalizes allowed CODEX_HOME ancestor aliases", async () =
   }
 });
 
-test("Codex setup maps config races and detects external edits", async () => {
+setupCodexTest("Codex setup maps config races and detects external edits", async () => {
   const raced = await setupFixture();
   try {
     raced.client.writeError = new CodexConfigRpcError(-32600, "configVersionConflict");
@@ -225,7 +230,7 @@ test("Codex setup maps config races and detects external edits", async () => {
   }
 });
 
-test("Codex setup rejects unsafe config paths before opening a client", async () => {
+setupCodexTest("Codex setup rejects unsafe config paths before opening a client", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-codex-path-"));
   try {
     const executable = path.join(root, "safewhatsapp");
@@ -261,7 +266,7 @@ test("Codex setup rejects unsafe config paths before opening a client", async ()
   }
 });
 
-test("Codex setup recovers an old partial lock but not a fresh competing lock", async () => {
+setupCodexTest("Codex setup recovers an old partial lock but not a fresh competing lock", async () => {
   const stale = await setupFixture();
   try {
     const lockPath = path.join(stale.codexHome, ".safe-whatsapp-codex-setup.lock");
@@ -289,7 +294,7 @@ test("Codex setup recovers an old partial lock but not a fresh competing lock", 
   }
 });
 
-test("standalone executable handoff accepts only its verified private bundle", async () => {
+setupCodexTest("standalone executable handoff accepts only its verified private bundle", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-standalone-self-"));
   try {
     const bundle = path.join(root, "bundle");
