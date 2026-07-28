@@ -1,0 +1,56 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+release/
+*.tsbuildinfo
+*.tgz
+*.tar.gz
+*.zip
+
+# Local environment, package-manager credentials, and signing material
+.env
+.env.*
+!.env.example
+.npmrc
+*.key
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
+
+# Safe WhatsApp account state (never commit)
+.safe-whatsapp-mcp/
+.safe-whatsapp-mcp-state
+/config.json
+/credential-vault.json
+/state.sqlite3
+/state.sqlite3-*
+/process.lock
+/process.lock.*
+/audit.log
+/pending/
+/media/
+/outbox/
+/.safe-whatsapp-codex-setup.lock*
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.nyc_output/
+.cache/
+tmp/
+temp/
+
+# Local editor, agent, and operating-system metadata
+.DS_Store
+.idea/
+.vscode/
+.codex/
+.agents/
+.claude/
+*.swp
+*.swo

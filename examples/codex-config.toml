@@ -1,0 +1,34 @@
+# `safewhatsapp setup-codex` is preferred because it preserves the existing file.
+# For manual setup, replace the launcher below with the reviewed standalone path.
+
+approval_policy = "on-request"
+approvals_reviewer = "user"
+
+[mcp_servers.safe_whatsapp]
+command = "/absolute/path/to/reviewed/standalone/safewhatsapp"
+args = ["serve"]
+startup_timeout_sec = 20
+tool_timeout_sec = 90
+required = false
+enabled = true
+default_tools_approval_mode = "writes"
+enabled_tools = [
+  "get_whatsapp_status",
+  "list_whatsapp_chats",
+  "read_whatsapp_chat",
+  "fetch_older_whatsapp_messages",
+  "search_whatsapp_messages",
+  "get_whatsapp_media",
+  "list_whatsapp_sends",
+  "prepare_whatsapp_text_send",
+  "prepare_whatsapp_media_send",
+  "send_prepared_whatsapp_message",
+  "discard_prepared_whatsapp_message",
+]
+
+[mcp_servers.safe_whatsapp.env]
+SAFE_WHATSAPP_MCP_ENABLE_SEND = "false"
+SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND = "false"
+
+[mcp_servers.safe_whatsapp.tools.send_prepared_whatsapp_message]
+approval_mode = "prompt"

@@ -1,0 +1,10 @@
+{
+  "retentionDays": 7,
+  "maxMessagesPerChat": 200,
+  "pendingTtlMinutes": 10,
+  "connectionTimeoutSeconds": 15,
+  "syncTimeoutSeconds": 15,
+  "idleTimeoutSeconds": 60,
+  "inlineMediaMiB": 8,
+  "maxMediaMiB": 25
+}

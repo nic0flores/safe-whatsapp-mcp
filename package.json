@@ -1,0 +1,69 @@
+{
+  "name": "safe-whatsapp-mcp",
+  "version": "0.1.0",
+  "description": "Local, confirmation-gated MCP access to a personal WhatsApp linked device.",
+  "type": "module",
+  "bin": {
+    "safewhatsapp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "examples"
+  ],
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/add-cli-shebang.mjs",
+    "build:standalone": "npm run build && node scripts/build-standalone.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "audit:prod": "npm audit --omit=dev",
+    "pack:dry-run": "npm pack --dry-run",
+    "smoke:pack": "node scripts/smoke-pack.mjs",
+    "smoke:standalone": "node scripts/smoke-standalone.mjs",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "whatsapp",
+    "baileys",
+    "personal-assistant",
+    "human-in-the-loop"
+  ],
+  "author": "Dhruv Ratra",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhruvratra/safe-whatsapp-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dhruvratra/safe-whatsapp-mcp/issues"
+  },
+  "homepage": "https://github.com/dhruvratra/safe-whatsapp-mcp#readme",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@napi-rs/keyring": "1.3.0",
+    "baileys": "7.0.0-rc13",
+    "better-sqlite3": "12.10.0",
+    "file-type": "22.0.1",
+    "qrcode": "1.5.4",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.15.29",
+    "@types/qrcode": "1.5.5",
+    "typescript": "5.8.3"
+  }
+}

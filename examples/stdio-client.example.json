@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "safe-whatsapp": {
+      "command": "safewhatsapp",
+      "args": ["serve"],
+      "env": {
+        "SAFE_WHATSAPP_MCP_ENABLE_SEND": "false",
+        "SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND": "false"
+      }
+    }
+  }
+}
