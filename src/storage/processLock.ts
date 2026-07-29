@@ -1,6 +1,6 @@
-// Agent context note: Enforces one writer process with crash-recoverable reclaim guards. Tests: test/core-process-lock.test.mjs. Reclaim only after the recorded PID is demonstrably absent.
+// Agent context note: Enforces one writer process with crash-recoverable reclaim guards and bounded no-follow metadata reads. Tests: test/core-process-lock.test.mjs. Reclaim only after the recorded PID is demonstrably absent.
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { SafeWhatsAppError } from "../errors.js";
@@ -8,6 +8,8 @@ import { ensurePrivateDir, isNodeError } from "./privateFiles.js";
 
 interface LockRecord { pid: number; token: string; createdAt: string }
 interface ReclaimGuard { path: string; token: string }
+
+const MAX_LOCK_RECORD_BYTES = 4_096;
 
 export class ProcessLock {
   private handle?: FileHandle;
@@ -26,7 +28,7 @@ export class ProcessLock {
         if (!isNodeError(error) || error.code !== "EEXIST") throw error;
       }
       const record = await this.readRecord();
-      if (record && isRunning(record.pid)) throw lockedError();
+      if (record && isProcessRunning(record.pid)) throw lockedError();
       const reclaimed = await this.reclaimStale(record?.token);
       if (reclaimed) return;
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -79,7 +81,7 @@ export class ProcessLock {
     const quarantine = `${this.filePath}.stale.${randomUUID()}`;
     try {
       const current = await this.readRecord();
-      if (current?.token !== expectedToken || (current && isRunning(current.pid))) return false;
+      if (current?.token !== expectedToken || (current && isProcessRunning(current.pid))) return false;
       try {
         await fs.rename(this.filePath, quarantine);
       } catch (error) {
@@ -107,7 +109,7 @@ export class ProcessLock {
     } catch (error) {
       if (!isNodeError(error) || error.code !== "EEXIST") throw error;
       const record = await readGuardRecord(guardPath);
-      if (record && isRunning(record.pid)) return undefined;
+      if (record && isProcessRunning(record.pid)) return undefined;
       const info = await fs.lstat(guardPath).catch(() => undefined);
       if (!record && info && Date.now() - info.mtimeMs < 5_000) return undefined;
       const stalePath = `${guardPath}.stale.${randomUUID()}`;
@@ -153,6 +155,10 @@ export class ProcessLock {
   }
 }
 
+export async function readProcessLockPid(filePath: string): Promise<number | undefined> {
+  return (await readRecordAt(filePath))?.pid;
+}
+
 async function readGuardRecord(guardPath: string): Promise<LockRecord | undefined> {
   const info = await fs.lstat(guardPath).catch(() => undefined);
   if (!info) return undefined;
@@ -162,14 +168,46 @@ async function readGuardRecord(guardPath: string): Promise<LockRecord | undefine
 }
 
 async function readRecordAt(filePath: string): Promise<LockRecord | undefined> {
+  let handle: FileHandle | undefined;
   try {
-    const value = JSON.parse(await fs.readFile(filePath, "utf8")) as Partial<LockRecord>;
+    const before = await fs.lstat(filePath);
+    if (!isBoundedRegularFile(before)) return undefined;
+    handle = await fs.open(
+      filePath,
+      fsConstants.O_RDONLY |
+        (fsConstants.O_NOFOLLOW ?? 0) |
+        (fsConstants.O_NONBLOCK ?? 0),
+    );
+    const opened = await handle.stat();
+    if (!isBoundedRegularFile(opened) || !sameFile(before, opened)) return undefined;
+    const after = await fs.lstat(filePath);
+    if (!isBoundedRegularFile(after) || !sameFile(opened, after)) return undefined;
+
+    const bytes = Buffer.alloc(MAX_LOCK_RECORD_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const result = await handle.read(bytes, length, bytes.length - length, length);
+      if (result.bytesRead === 0) break;
+      length += result.bytesRead;
+    }
+    if (length > MAX_LOCK_RECORD_BYTES) return undefined;
+    const value = JSON.parse(bytes.subarray(0, length).toString("utf8")) as Partial<LockRecord>;
     return typeof value.pid === "number" && typeof value.token === "string"
       ? value as LockRecord
       : undefined;
   } catch {
     return undefined;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
+}
+
+function isBoundedRegularFile(info: { isFile(): boolean; isSymbolicLink(): boolean; size: number }): boolean {
+  return info.isFile() && !info.isSymbolicLink() && info.size <= MAX_LOCK_RECORD_BYTES;
+}
+
+function sameFile(first: { dev: number; ino: number }, second: { dev: number; ino: number }): boolean {
+  return first.dev === second.dev && first.ino === second.ino;
 }
 
 function lockedError(): SafeWhatsAppError {
@@ -179,7 +217,7 @@ function lockedError(): SafeWhatsAppError {
   );
 }
 
-function isRunning(pid: number): boolean {
+export function isProcessRunning(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);

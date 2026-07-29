@@ -1,12 +1,16 @@
-// Agent context note: Provides concise pairing, Codex setup, status, STDIO serve, direct disconnect, and guarded purge commands. Tests: test/cli.test.mjs, test/codex-setup.test.mjs, test/browser-qr.test.mjs, test/account-lifecycle.test.mjs, and package smoke. Keep stdout protocol-only while serving, preserve config/outbox on disconnect, and never expose QR/auth data beyond the interactive local pairing flow.
+// Agent context note: Provides pairing, Codex setup, status, broker-proxied STDIO serve, direct disconnect, and guarded purge commands. Tests: CLI, broker, Codex setup, browser QR, account lifecycle, and package smoke. Keep stdout protocol-only while serving, keep the broker command internal, preserve config/outbox on disconnect, and never expose QR/auth data beyond interactive pairing.
 import process from "node:process";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SafeWhatsAppApplication } from "./application.js";
+import {
+  withBrokerStateTakeover,
+} from "./broker/exclusive.js";
+import { serveThroughBroker } from "./broker/proxy.js";
+import { runLocalBroker } from "./broker/server.js";
+import { getCliStatus } from "./broker/status.js";
 import { setupCodex } from "./codex/setupCodex.js";
 import { ConfigLoader } from "./config/config.js";
 import { CLI_NAME, PACKAGE_NAME, VERSION } from "./constants.js";
 import { SafeWhatsAppError, publicError } from "./errors.js";
-import { createWhatsAppMcpServer } from "./mcp/server.js";
 import { BrowserQrDisplay } from "./qr/browserQr.js";
 import { StatePaths } from "./storage/paths.js";
 import { purgeLocalState, WhatsAppCore } from "./whatsapp/core.js";
@@ -48,6 +52,12 @@ async function run(input: string[]): Promise<void> {
       assertNoArguments(rest);
       await serveCommand();
       return;
+    case "broker":
+      if (rest.length > 0 && !(rest.length === 1 && rest[0] === "--parented")) {
+        throw invalidArguments("broker");
+      }
+      await runLocalBroker({ parented: rest[0] === "--parented" });
+      return;
     case "disconnect":
     case "unlink":
       assertNoArguments(rest);
@@ -65,15 +75,25 @@ async function run(input: string[]): Promise<void> {
 }
 
 async function setupCodexCommand(input: string[]): Promise<void> {
-  const enableSend = input.length === 1 && input[0] === "--enable-send";
-  if (input.length > 0 && !enableSend) throw invalidArguments("setup-codex [--enable-send]");
-  const configured = await setupCodex({ enableSend });
+  const usage = "setup-codex [--enable-send] [--enable-media-send]";
+  const flags = new Set(input);
+  if (flags.size !== input.length ||
+      input.some((argument) => !["--enable-send", "--enable-media-send"].includes(argument))) {
+    throw invalidArguments(usage);
+  }
+  const enableSend = flags.has("--enable-send");
+  const enableMediaSend = flags.has("--enable-media-send");
+  if (enableMediaSend && !enableSend) throw invalidArguments(usage);
+  const configured = await setupCodex({ enableSend, enableMediaSend });
   const state = configured.changed ? "configured" : "already configured";
   const sending = configured.sendEnabled
-    ? "Confirmation-gated text sending is enabled."
+    ? "Browser-reviewed text sending is enabled."
     : "Text sending is disabled.";
+  const mediaSending = configured.mediaSendEnabled
+    ? "Browser-reviewed media sending is enabled."
+    : "Media sending is disabled.";
   process.stdout.write(
-    `Codex is ${state} for Safe WhatsApp. ${sending}\n` +
+    `Codex is ${state} for Safe WhatsApp. ${sending} ${mediaSending}\n` +
     (configured.enabled
       ? "Restart Codex to load the WhatsApp tools.\n"
       : "The existing Safe WhatsApp MCP entry remains disabled. Enable it in Codex before restarting.\n"),
@@ -82,6 +102,11 @@ async function setupCodexCommand(input: string[]): Promise<void> {
 
 async function connectCommand(): Promise<void> {
   requireInteractiveTerminal();
+  const paths = new StatePaths();
+  await withBrokerStateTakeover(paths, () => connectWithExclusiveState(paths));
+}
+
+async function connectWithExclusiveState(paths: StatePaths): Promise<void> {
   let qrDisplay: BrowserQrDisplay | undefined;
   let qrUpdates = Promise.resolve();
   let qrDisplayError: unknown;
@@ -93,6 +118,7 @@ async function connectCommand(): Promise<void> {
   let displayNoticeShown = false;
   let pairingAcceptedNoticeShown = false;
   const application = await SafeWhatsAppApplication.open({
+    paths,
     connectionTimeoutMs: 300_000,
     syncTimeoutMs: 120_000,
     clearResidualIfUnpaired: true,
@@ -159,64 +185,26 @@ async function connectCommand(): Promise<void> {
 async function statusCommand(input: string[]): Promise<void> {
   const live = input.length === 1 && input[0] === "--live";
   if (input.length > 0 && !live) throw invalidArguments("status [--live]");
-  const application = await SafeWhatsAppApplication.open();
-  try {
-    if (live && application.core.client.status().paired) {
-      await application.core.client.connect();
-    }
-    const status = await application.services.reader.getStatus();
-    process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
-  } finally {
-    await application.close();
-  }
+  const paths = new StatePaths();
+  const status = await getCliStatus(paths, live);
+  process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
 }
 
 async function serveCommand(): Promise<void> {
-  const application = await SafeWhatsAppApplication.open();
-  const server = createWhatsAppMcpServer({ services: application.services });
-  const transport = new StdioServerTransport();
-  let resolveClosed!: () => void;
-  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-  transport.onclose = resolveClosed;
-  server.server.onerror = () => {
-    process.stderr.write(`${PACKAGE_NAME}: MCP protocol error.\n`);
-  };
-  let stopping: Promise<void> | undefined;
-  const stop = () => {
-    stopping ??= (async () => {
-      await server.close().catch(() => undefined);
-      await application.close().catch(() => undefined);
-      resolveClosed();
-    })();
-    return stopping;
-  };
-  const onSignal = () => { void stop(); };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
-  process.stdin.once("end", onSignal);
-  process.stdin.once("close", onSignal);
-  try {
-    await server.connect(transport);
-    await closed;
-  } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    process.stdin.off("end", onSignal);
-    process.stdin.off("close", onSignal);
-    await stop();
-  }
+  await serveThroughBroker();
 }
 
 async function unlinkCommand(): Promise<void> {
   const paths = new StatePaths();
-  const config = await new ConfigLoader(paths).load();
-  const core = await WhatsAppCore.open(paths, config, { connectionTimeoutMs: 60_000 });
-  let result;
-  try {
-    result = await core.unlink();
-  } finally {
-    await core.close();
-  }
+  const result = await withBrokerStateTakeover(paths, async () => {
+    const config = await new ConfigLoader(paths).load();
+    const core = await WhatsAppCore.open(paths, config, { connectionTimeoutMs: 60_000 });
+    try {
+      return await core.unlink();
+    } finally {
+      await core.close();
+    }
+  });
   if (result.remoteLogout === "unconfirmed") {
     throw new SafeWhatsAppError(
       "Local account state was cleared, but WhatsApp did not confirm remote logout. Remove this device in WhatsApp → Settings → Linked Devices on your phone.",
@@ -235,7 +223,8 @@ async function purgeCommand(input: string[]): Promise<void> {
     throw invalidArguments("purge --yes [--abandon-key]");
   }
   const paths = new StatePaths();
-  await purgeLocalState(paths, { abandonCredentialKey });
+  await withBrokerStateTakeover(paths, () =>
+    purgeLocalState(paths, { abandonCredentialKey }));
   const keyCleanup = abandonCredentialKey
     ? "requested deletion of its OS credential-vault key and discarded the non-secret retry descriptor if deletion could not be confirmed"
     : "requested deletion of its OS credential-vault key";
@@ -267,11 +256,11 @@ function cleanArgument(value: string): string {
 
 function helpText(): string {
   return `${CLI_NAME} ${VERSION}\n\n` +
-    "Local, confirmation-gated MCP access to a personal WhatsApp linked device.\n\n" +
+    "Local, human-reviewed MCP access to a personal WhatsApp linked device.\n\n" +
     "Usage:\n" +
     `  ${CLI_NAME} connect          Pair in a private local browser page, or check the link\n` +
-    `  ${CLI_NAME} setup-codex [--enable-send]\n` +
-    "                               Register with Codex; sending is opt-in\n" +
+    `  ${CLI_NAME} setup-codex [--enable-send] [--enable-media-send]\n` +
+    "                               Register with Codex; media requires both flags\n" +
     `  ${CLI_NAME} status [--live]  Show local status; optionally check WhatsApp live\n` +
     `  ${CLI_NAME} serve            Run the STDIO MCP server\n` +
     `  ${CLI_NAME} disconnect       Log out and clear account state; preserve config/outbox\n` +

@@ -1,4 +1,4 @@
-// Agent context note: Safely registers or upgrades a recognized standalone launcher in the user Codex config through Codex's atomic config API. Tests: test/codex-setup.test.mjs. Preserve unrelated settings and disabled state, recover only old private partial locks, reject server-name collisions and non-human send approvals, and keep sending opt-in; update this note after meaningful changes.
+// Agent context note: Safely registers or upgrades a recognized standalone launcher in Codex through its atomic config API. Tests: test/codex-setup.test.mjs. Auto-approve only the non-sending browser opener, preserve the legacy send prompt and unrelated stricter settings, and keep text/media gates explicit.
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -46,6 +46,7 @@ interface ConfigSnapshot {
 
 export interface SetupCodexOptions {
   enableSend?: boolean;
+  enableMediaSend?: boolean;
   environment?: NodeJS.ProcessEnv;
   executable?: string;
   createClient?: (codexHome: string, environment: NodeJS.ProcessEnv) => Promise<ConfigClient>;
@@ -56,9 +57,18 @@ export interface SetupCodexResult {
   configPath: string;
   enabled: boolean;
   sendEnabled: boolean;
+  mediaSendEnabled: boolean;
 }
 
 export async function setupCodex(options: SetupCodexOptions = {}): Promise<SetupCodexResult> {
+  const enableSend = options.enableSend === true;
+  const enableMediaSend = options.enableMediaSend === true;
+  if (enableMediaSend && !enableSend) {
+    throw new SafeWhatsAppError(
+      "Media sending requires text sending to be enabled too.",
+      "invalid_send_configuration",
+    );
+  }
   const environment = options.environment ?? process.env;
   const suppliedExecutable = options.executable ?? await resolveStandaloneExecutable({ environment });
   let executable: string;
@@ -86,9 +96,13 @@ export async function setupCodex(options: SetupCodexOptions = {}): Promise<Setup
       const effective = serverAt(initial.effective);
       if (!current && effective) throw registrationConflict();
       if (current) await assertCompatibleServer(current, executable);
-      if (options.enableSend) assertHumanApproval(initial.effective);
+      if (enableSend) assertHumanApproval(initial.effective);
 
-      const desired = desiredServer(current, executable, options.enableSend === true);
+      const desired = desiredServer(
+        current,
+        executable,
+        { enableSend, enableMediaSend },
+      );
       if (current && containsValue(current, desired) && effective && activeServerMatches(effective, desired)) {
         return result(false, configPath, desired);
       }
@@ -141,7 +155,7 @@ export async function setupCodex(options: SetupCodexOptions = {}): Promise<Setup
 function desiredServer(
   current: Record<string, unknown> | undefined,
   executable: string,
-  enableSend: boolean,
+  sendPolicy: { enableSend: boolean; enableMediaSend: boolean },
 ): Record<string, unknown> {
   const enabled = current?.enabled === false ? false : true;
   const defaultApproval = current?.default_tools_approval_mode === "prompt"
@@ -157,10 +171,11 @@ function desiredServer(
     default_tools_approval_mode: defaultApproval,
     enabled_tools: [...WHATSAPP_TOOL_NAMES],
     env: {
-      [SEND_ENABLED_ENV]: enableSend ? "true" : "false",
-      [MEDIA_SEND_ENABLED_ENV]: "false",
+      [SEND_ENABLED_ENV]: sendPolicy.enableSend ? "true" : "false",
+      [MEDIA_SEND_ENABLED_ENV]: sendPolicy.enableMediaSend ? "true" : "false",
     },
     tools: {
+      open_whatsapp_send_review: { approval_mode: "approve" },
       send_prepared_whatsapp_message: { approval_mode: "prompt" },
     },
   };
@@ -199,7 +214,7 @@ function assertHumanApproval(config: Record<string, unknown>): void {
       (config.approvals_reviewer !== null && config.approvals_reviewer !== undefined &&
         config.approvals_reviewer !== "user")) {
     throw new SafeWhatsAppError(
-      "Text sending requires Codex approvals to be reviewed by you. Change Codex approval settings or configure without --enable-send.",
+      "Sending requires Codex approvals to be reviewed by you. Change Codex approval settings or configure without send flags.",
       "human_approval_required",
     );
   }
@@ -456,11 +471,13 @@ function isRunning(pid: number): boolean {
 
 function result(changed: boolean, configPath: string, server: Record<string, unknown>): SetupCodexResult {
   const env = server.env as Record<string, unknown>;
+  const sendEnabled = env[SEND_ENABLED_ENV] === "true";
   return {
     changed,
     configPath,
     enabled: server.enabled !== false,
-    sendEnabled: env[SEND_ENABLED_ENV] === "true",
+    sendEnabled,
+    mediaSendEnabled: sendEnabled && env[MEDIA_SEND_ENABLED_ENV] === "true",
   };
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "safe-whatsapp-mcp",
-  "version": "0.1.0",
-  "description": "Security-focused local MCP server for reading and confirmation-gated replies through a personal WhatsApp linked device.",
+  "version": "0.2.0",
+  "description": "Local MCP server for reading a personal WhatsApp linked device and sending through an editable private browser review.",
   "type": "module",
   "bin": {
     "safewhatsapp": "dist/cli.js"
@@ -57,10 +57,13 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "@napi-rs/keyring": "1.3.0",
-    "baileys": "7.0.0-rc13",
+    "baileys": "7.0.0-rc14",
     "better-sqlite3": "12.10.0",
     "file-type": "22.0.1",
+    "htmlparser2": "12.0.0",
+    "ipaddr.js": "2.4.0",
     "qrcode": "1.5.4",
+    "sharp": "0.35.3",
     "zod": "3.25.76"
   },
   "devDependencies": {

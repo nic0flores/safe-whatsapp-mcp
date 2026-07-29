@@ -1,4 +1,4 @@
-// Agent context note: Extracts the produced standalone archive into a clean temporary directory, then proves its launcher can load native code, validate its own setup identity, and run without node on PATH. Tests: run via npm run smoke:standalone after build:standalone. Never use a real WhatsApp profile, Codex config, or credential store entry; update this note after meaningful changes.
+// Agent context note: Extracts the standalone archive into a clean temporary directory, then proves its launcher, native modules, and broker-backed MCP work without node on PATH. Tests: run via npm run smoke:standalone after build:standalone. Never use a real WhatsApp profile, Codex config, or credential store entry; update this note after meaningful changes.
 import { execFile as execFileCallback } from "node:child_process";
 import { access, mkdtemp, mkdir, readFile, readdir, rm, symlink } from "node:fs/promises";
 import os from "node:os";
@@ -6,6 +6,8 @@ import path from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
   assertStandalonePlatform,
   standaloneBundleName,
@@ -22,6 +24,20 @@ const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "safewhatsapp-standal
 const extractionRoot = path.join(temporaryRoot, "extracted");
 const bundleRoot = path.join(extractionRoot, bundleName);
 const launcher = path.join(bundleRoot, standaloneExecutableName(process.platform));
+const expectedTools = [
+  "discard_prepared_whatsapp_message",
+  "fetch_older_whatsapp_messages",
+  "get_whatsapp_media",
+  "get_whatsapp_status",
+  "list_whatsapp_chats",
+  "list_whatsapp_sends",
+  "open_whatsapp_send_review",
+  "prepare_whatsapp_media_send",
+  "prepare_whatsapp_text_send",
+  "read_whatsapp_chat",
+  "search_whatsapp_messages",
+  "send_prepared_whatsapp_message",
+];
 
 try {
   await mkdir(extractionRoot, { mode: 0o700 });
@@ -91,6 +107,7 @@ try {
   if (parsed.paired !== false || parsed.connected !== false) {
     throw new Error("Standalone smoke profile was unexpectedly connected.");
   }
+  await assertBrokerBackedMcp(launcher, env, state);
   await importBundledNativeModule("@napi-rs/keyring/index.js", env);
   await importBundledNativeModule("sharp/dist/index.mjs", env);
   try {
@@ -108,6 +125,154 @@ process.stdout.write(`Standalone archive smoke OK without node on PATH: ${path.b
 
 function runLauncher(command, args, env) {
   return execFile(command, args, { cwd: bundleRoot, env, timeout: 30_000 });
+}
+
+async function assertBrokerBackedMcp(command, env, state) {
+  const transport = new StdioClientTransport({
+    command,
+    args: ["serve"],
+    cwd: bundleRoot,
+    env,
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "safe-whatsapp-standalone-smoke", version: "0.0.0" });
+  let brokerPid;
+  let stderr = "";
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await withTimeout(client.close(), "standalone MCP client close").catch(() => undefined);
+    await withTimeout(transport.close(), "standalone MCP transport close").catch(() => undefined);
+  };
+  transport.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+
+  try {
+    await withTimeout(client.connect(transport), "standalone MCP connect");
+    const [tools, descriptor, lock] = await Promise.all([
+      withTimeout(client.listTools(), "standalone MCP listTools"),
+      readJsonWhenPresent(path.join(state, "broker.json")),
+      readJsonWhenPresent(path.join(state, "process.lock")),
+    ]);
+    brokerPid = descriptor.pid;
+    if (!Number.isSafeInteger(brokerPid) || lock.pid !== brokerPid) {
+      throw new Error("Standalone MCP did not start one broker-owned state process.");
+    }
+    const actualTools = tools.tools.map((tool) => tool.name).sort();
+    if (JSON.stringify(actualTools) !== JSON.stringify(expectedTools)) {
+      throw new Error(`Unexpected standalone MCP tools: ${actualTools.join(", ")}`);
+    }
+
+    const result = await withTimeout(
+      client.callTool({ name: "get_whatsapp_status", arguments: {} }),
+      "standalone get_whatsapp_status",
+    );
+    const status = result.structuredContent;
+    if (
+      result.isError !== undefined ||
+      status?.ok !== true ||
+      status.data?.paired !== false ||
+      status.data?.connected !== false ||
+      status.data?.sendEnabled !== false ||
+      status.data?.mediaSendEnabled !== false
+    ) {
+      throw new Error(`Unexpected standalone MCP status: ${JSON.stringify(status)}`);
+    }
+
+    await close();
+    await waitForMissing([
+      path.join(state, "broker.json"),
+      path.join(state, "process.lock"),
+    ]);
+  } catch (error) {
+    if (error instanceof Error) error.message += `\nstandalone MCP stderr: ${stderr.trim()}`;
+    throw error;
+  } finally {
+    await close();
+    await stopSmokeBroker(brokerPid, state);
+  }
+}
+
+async function withTimeout(promise, label, timeoutMs = 15_000) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readJsonWhenPresent(filePath, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(await readFile(filePath, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await pause(50);
+  }
+  throw new Error(`Timed out waiting for ${path.basename(filePath)}`);
+}
+
+async function waitForMissing(filePaths, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const present = await Promise.all(filePaths.map(async (filePath) => {
+      try {
+        await access(filePath);
+        return true;
+      } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+    }));
+    if (present.every((value) => !value)) return;
+    await pause(50);
+  }
+  throw new Error(`Timed out waiting for broker files to disappear: ${filePaths.join(", ")}`);
+}
+
+async function stopSmokeBroker(pid, state) {
+  const [descriptor, lock] = await Promise.all([
+    readJsonIfPresent(path.join(state, "broker.json")),
+    readJsonIfPresent(path.join(state, "process.lock")),
+  ]);
+  if (
+    !descriptor ||
+    !lock ||
+    !Number.isSafeInteger(descriptor.pid) ||
+    descriptor.pid !== lock.pid ||
+    (Number.isSafeInteger(pid) && descriptor.pid !== pid)
+  ) return;
+  try {
+    process.kill(descriptor.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  await waitForMissing([
+    path.join(state, "broker.json"),
+    path.join(state, "process.lock"),
+  ], 3_000).catch(() => undefined);
+}
+
+async function readJsonIfPresent(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function pause(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function importBundledNativeModule(relativePath, env) {

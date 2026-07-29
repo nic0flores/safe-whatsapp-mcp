@@ -1,5 +1,5 @@
-// Agent context note: Composes encrypted WhatsApp auth, transport, retained reads/history, staged sends, and exact MCP status/contracts. Tests: test/application.test.mjs, test/account-lifecycle.test.mjs, and package smoke. Pairing may request locked residual-state cleanup before fresh auth hydration; keep WhatsApp the only external system, one-batch history semantics, and the single staged-send path.
-import type { AnyMessageContent } from "baileys";
+// Agent context note: Composes encrypted auth, retained reads, legacy/reviewed sends, and broker-owned browser reviews. Tests: application/account lifecycle, send-service, review-manager, and package smoke. Keep WhatsApp the only message transport and never let reviewed preview bytes be refetched implicitly.
+import type { AnyMessageContent, WAUrlInfo } from "baileys";
 import type { MasterKeyStore } from "./auth/masterKeyStore.js";
 import { JsonLineAuditLogger } from "./audit/redactedAudit.js";
 import { ConfigLoader, type SafeWhatsAppConfig } from "./config/config.js";
@@ -12,9 +12,11 @@ import type {
 } from "./media/types.js";
 import { FilePendingSendStore } from "./replies/pendingStore.js";
 import { WhatsAppSendService } from "./replies/sendService.js";
+import { SendReviewManager } from "./review/reviewManager.js";
 import type {
   DestinationInput,
   DestinationResolver,
+  PendingLinkPreview,
   ResolvedDestination,
   WhatsAppOutboundSender,
 } from "./replies/types.js";
@@ -37,6 +39,7 @@ export class SafeWhatsAppApplication {
     readonly config: SafeWhatsAppConfig,
     readonly core: WhatsAppCore,
     readonly inboundMedia: InboundMediaService,
+    readonly reviews: SendReviewManager,
     readonly services: WhatsAppMcpServices,
   ) {}
 
@@ -77,6 +80,16 @@ export class SafeWhatsAppApplication {
         },
       );
       const reader = new ClientReadOperations(core, inboundMedia);
+      const reviews = new SendReviewManager({
+        sends,
+        listCachedGroups: (selectedChatId) => cachedReviewGroups(core, selectedChatId),
+        getCachedReply: (messageId) => cachedReviewReply(core, messageId),
+        sendEnabled: config.sendEnabled,
+        mediaSendEnabled: config.mediaSendEnabled,
+        maxMediaBytes: config.maxMediaBytes,
+        ttlMs: config.pendingTtlMs,
+        fromLabel: linkedAccountLabel(core),
+      });
       await Promise.all([
         reader.reconcileMedia(),
         sends.initialize(),
@@ -86,7 +99,8 @@ export class SafeWhatsAppApplication {
         config,
         core,
         inboundMedia,
-        { reader, media: inboundMedia, sends },
+        reviews,
+        { reader, media: inboundMedia, sends, reviews },
       );
     } catch (error) {
       await core.close().catch(() => undefined);
@@ -95,8 +109,48 @@ export class SafeWhatsAppApplication {
   }
 
   async close(): Promise<void> {
-    await this.core.close();
+    try {
+      await this.reviews.close();
+    } finally {
+      await this.core.close();
+    }
   }
+}
+
+function cachedReviewGroups(core: WhatsAppCore, selectedChatId?: string): Array<{ chatId: string; title?: string }> {
+  const first = core.messages.listChats({ kind: "group", limit: 100 });
+  if (!selectedChatId || first.items.some((group) => group.chatId === selectedChatId)) return first.items;
+  let cursor = first.nextCursor;
+  while (cursor) {
+    const page = core.messages.listChats({ kind: "group", limit: 200, cursor });
+    const selected = page.items.find((group) => group.chatId === selectedChatId);
+    if (selected) return [...first.items, selected];
+    cursor = page.nextCursor;
+  }
+  return first.items;
+}
+
+function cachedReviewReply(core: WhatsAppCore, messageId: string) {
+  const message = core.messages.getRetainedMessage(messageId)?.message;
+  if (!message) return undefined;
+  const chat = core.messages.resolveChat(message.chatId);
+  return {
+    chatId: message.chatId,
+    ...(chat?.e164 ? { chatE164: chat.e164 } : {}),
+    fromMe: message.fromMe,
+    ...(message.senderE164 ? { senderE164: message.senderE164 } : {}),
+    timestamp: message.timestamp,
+    ...(message.text ? { text: message.text } : {}),
+    ...(message.media ? { mediaKind: message.media.kind } : {}),
+  };
+}
+
+function linkedAccountLabel(core: WhatsAppCore): string {
+  const id = core.auth.state.creds.me?.id;
+  const match = typeof id === "string"
+    ? /^([1-9]\d{6,14})(?::\d+)?@s\.whatsapp\.net$/u.exec(id)
+    : null;
+  return match ? `WhatsApp +${match[1]}` : "Linked WhatsApp profile (number unavailable)";
 }
 
 class ClientReadOperations implements WhatsAppReadOperations {
@@ -210,8 +264,15 @@ class ClientOutboundSender implements WhatsAppOutboundSender {
     destination: ResolvedDestination,
     text: string,
     replyToMessageId?: string,
+    linkPreview?: PendingLinkPreview | null,
   ): Promise<{ messageId: string }> {
-    const result = await this.core.client.sendMessage(destination, { text }, replyToMessageId);
+    const content: AnyMessageContent = {
+      text,
+      ...(linkPreview !== undefined
+        ? { linkPreview: linkPreview === null ? null : baileysLinkPreview(linkPreview) }
+        : {}),
+    };
+    const result = await this.core.client.sendMessage(destination, content, replyToMessageId);
     return { messageId: result.sourceId };
   }
 
@@ -228,6 +289,18 @@ class ClientOutboundSender implements WhatsAppOutboundSender {
     );
     return { messageId: result.sourceId };
   }
+}
+
+function baileysLinkPreview(preview: PendingLinkPreview): WAUrlInfo {
+  return {
+    "matched-text": preview.matchedText,
+    "canonical-url": preview.canonicalUrl,
+    title: preview.title,
+    ...(preview.description !== undefined ? { description: preview.description } : {}),
+    ...(preview.jpegThumbnailBase64 !== undefined
+      ? { jpegThumbnail: Buffer.from(preview.jpegThumbnailBase64, "base64") }
+      : {}),
+  };
 }
 
 function mediaContent(media: OutboundMediaContent, caption: string | undefined): AnyMessageContent {

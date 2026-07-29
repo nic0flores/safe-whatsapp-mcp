@@ -9,6 +9,7 @@ import {
   SEND_ENABLED_ENV,
   STANDALONE_BUNDLE_ENV,
   STANDALONE_EXECUTABLE_ENV,
+  VERSION,
 } from "../dist/constants.js";
 import { CodexConfigRpcError } from "../dist/codex/appServerConfig.js";
 import { resolveStandaloneExecutable } from "../dist/codex/selfExecutable.js";
@@ -27,6 +28,7 @@ setupCodexTest("fresh Codex setup is read-only by default and idempotent", async
     const first = await setupCodex(fixture.options());
     assert.equal(first.changed, true);
     assert.equal(first.sendEnabled, false);
+    assert.equal(first.mediaSendEnabled, false);
     assert.equal(fixture.client.writes.length, 1);
     const write = fixture.client.writes[0];
     assert.equal(write.expectedVersion, "v1");
@@ -40,6 +42,7 @@ setupCodexTest("fresh Codex setup is read-only by default and idempotent", async
     assert.deepEqual(server.enabled_tools, [...WHATSAPP_TOOL_NAMES]);
     assert.equal(server.env[SEND_ENABLED_ENV], "false");
     assert.equal(server.env[MEDIA_SEND_ENABLED_ENV], "false");
+    assert.equal(server.tools.open_whatsapp_send_review.approval_mode, "approve");
     assert.equal(server.tools.send_prepared_whatsapp_message.approval_mode, "prompt");
     assert.equal(server.default_tools_approval_mode, "writes");
 
@@ -57,6 +60,7 @@ setupCodexTest("text sending requires explicit opt-in and human-routed Codex app
   try {
     const enabled = await setupCodex(fixture.options({ enableSend: true }));
     assert.equal(enabled.sendEnabled, true);
+    assert.equal(enabled.mediaSendEnabled, false);
     assert.equal(fixture.server().env[SEND_ENABLED_ENV], "true");
     assert.equal(fixture.server().env[MEDIA_SEND_ENABLED_ENV], "false");
 
@@ -76,6 +80,68 @@ setupCodexTest("text sending requires explicit opt-in and human-routed Codex app
         await blocked.cleanup();
       }
     }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+setupCodexTest("media sending requires its own opt-in plus the text-send gate", async () => {
+  const fixture = await setupFixture();
+  try {
+    await assert.rejects(
+      setupCodex(fixture.options({ enableMediaSend: true })),
+      (error) => error.code === "invalid_send_configuration",
+    );
+    assert.equal(fixture.client.writes.length, 0);
+
+    const enabled = await setupCodex(fixture.options({
+      enableSend: true,
+      enableMediaSend: true,
+    }));
+    assert.equal(enabled.sendEnabled, true);
+    assert.equal(enabled.mediaSendEnabled, true);
+    assert.equal(fixture.server().env[SEND_ENABLED_ENV], "true");
+    assert.equal(fixture.server().env[MEDIA_SEND_ENABLED_ENV], "true");
+    assert.equal(
+      fixture.server().tools.send_prepared_whatsapp_message.approval_mode,
+      "prompt",
+    );
+
+    const unchanged = await setupCodex(fixture.options({
+      enableSend: true,
+      enableMediaSend: true,
+    }));
+    assert.equal(unchanged.changed, false);
+    assert.equal(fixture.client.writes.length, 1);
+
+    const textOnly = await setupCodex(fixture.options({ enableSend: true }));
+    assert.equal(textOnly.changed, true);
+    assert.equal(textOnly.sendEnabled, true);
+    assert.equal(textOnly.mediaSendEnabled, false);
+    assert.equal(fixture.server().env[MEDIA_SEND_ENABLED_ENV], "false");
+
+    const readOnly = await setupCodex(fixture.options());
+    assert.equal(readOnly.changed, true);
+    assert.equal(readOnly.sendEnabled, false);
+    assert.equal(readOnly.mediaSendEnabled, false);
+    assert.equal(fixture.server().env[SEND_ENABLED_ENV], "false");
+    assert.equal(fixture.server().env[MEDIA_SEND_ENABLED_ENV], "false");
+    assert.equal(fixture.client.writes.length, 3);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+setupCodexTest("media opt-in is blocked when human-routed approvals are unavailable", async () => {
+  const fixture = await setupFixture({
+    effectiveConfig: { approval_policy: "never", approvals_reviewer: "user" },
+  });
+  try {
+    await assert.rejects(
+      setupCodex(fixture.options({ enableSend: true, enableMediaSend: true })),
+      (error) => error.code === "human_approval_required",
+    );
+    assert.equal(fixture.client.writes.length, 0);
   } finally {
     await fixture.cleanup();
   }
@@ -308,7 +374,7 @@ setupCodexTest("standalone executable handoff accepts only its verified private 
     await fs.writeFile(modulePath, "module", { mode: 0o644 });
     await fs.writeFile(path.join(bundle, "BUNDLE.json"), `${JSON.stringify({
       name: "safewhatsapp",
-      version: "0.1.0",
+      version: VERSION,
       platform: process.platform,
       arch: process.arch,
       node: process.version,

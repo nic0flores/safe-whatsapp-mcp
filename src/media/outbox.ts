@@ -1,4 +1,4 @@
-// Agent context note: Confines outbound files and reconciles ID/hash-bound snapshots plus stale snapshot temps. Tests: test/media.test.mjs and test/send-service.test.mjs. Reject unsafe roots, symlinks, and forged record paths; update this note after meaningful behavior changes.
+// Agent context note: Confines outbound files and review uploads, atomically replaces ID/hash-bound snapshots, and reconciles stale artifacts. Tests: test/media.test.mjs and test/send-service.test.mjs. Reject unsafe roots, symlinks, forged paths, and oversized in-memory uploads; update this note after meaningful behavior changes.
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -24,27 +24,44 @@ export class OutboxMediaService {
 
   async snapshot(relativePath: string, pendingId: string): Promise<OutboundMediaSnapshot> {
     assertPendingId(pendingId);
+    const wasReserved = this.reservedSnapshots.has(pendingId);
     this.reservedSnapshots.add(pendingId);
     try {
       const sourcePath = await this.resolveOutboxFile(relativePath);
       const bytes = await readRegularFile(sourcePath, this.maxBytes);
-      const detected = await fileTypeFromBuffer(bytes);
-      const mimeType = detected?.mime ?? "application/octet-stream";
-      const originalName = safeFileName(path.basename(sourcePath));
-      const snapshotPath = await this.expectedSnapshotPath(pendingId, true);
-
-      await writePrivateFile(snapshotPath, bytes);
-      return {
-        pendingId,
-        path: snapshotPath,
-        originalName,
-        sha256: sha256(bytes),
-        size: bytes.byteLength,
-        mimeType,
-        kind: mediaKind(mimeType),
-      };
+      return await this.commitSnapshot(bytes, path.basename(sourcePath), pendingId);
     } catch (error) {
-      this.reservedSnapshots.delete(pendingId);
+      if (!wasReserved) this.reservedSnapshots.delete(pendingId);
+      throw error;
+    }
+  }
+
+  async snapshotBytes(
+    bytes: Uint8Array,
+    fileName: string,
+    pendingId: string,
+  ): Promise<OutboundMediaSnapshot> {
+    assertPendingId(pendingId);
+    if (!(bytes instanceof Uint8Array)) {
+      throw new SafeWhatsAppError("Media upload bytes are invalid.", "invalid_media_upload");
+    }
+    if (bytes.byteLength > this.maxBytes) {
+      throw new SafeWhatsAppError("Media exceeds the 25 MiB limit.", "media_too_large");
+    }
+    if (typeof fileName !== "string" || fileName.trim().length === 0 || fileName.length > 1_024) {
+      throw new SafeWhatsAppError("The uploaded filename is invalid.", "invalid_media_filename");
+    }
+    const ownedBytes = Buffer.from(bytes);
+    const wasReserved = this.reservedSnapshots.has(pendingId);
+    this.reservedSnapshots.add(pendingId);
+    try {
+      return await this.commitSnapshot(
+        ownedBytes,
+        safeFileName(fileName.replace(/[\\/]/gu, "_")),
+        pendingId,
+      );
+    } catch (error) {
+      if (!wasReserved) this.reservedSnapshots.delete(pendingId);
       throw error;
     }
   }
@@ -122,6 +139,26 @@ export class OutboxMediaService {
       throw new SafeWhatsAppError("The staged media path is invalid.", "invalid_snapshot_path");
     }
     return expected;
+  }
+
+  private async commitSnapshot(
+    bytes: Uint8Array,
+    originalName: string,
+    pendingId: string,
+  ): Promise<OutboundMediaSnapshot> {
+    const detected = await fileTypeFromBuffer(bytes);
+    const mimeType = detected?.mime ?? "application/octet-stream";
+    const snapshotPath = await this.expectedSnapshotPath(pendingId, true);
+    await writePrivateFile(snapshotPath, bytes);
+    return {
+      pendingId,
+      path: snapshotPath,
+      originalName: safeFileName(originalName),
+      sha256: sha256(bytes),
+      size: bytes.byteLength,
+      mimeType,
+      kind: mediaKind(mimeType),
+    };
   }
 
   private async expectedSnapshotPath(pendingId: string, create: boolean): Promise<string> {

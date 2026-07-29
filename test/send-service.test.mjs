@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { JsonLineAuditLogger, NullAuditLogger } from "../dist/audit/redactedAudit.js";
 import { OutboxMediaService } from "../dist/media/outbox.js";
+import { approvalPreviewFor, digestSend } from "../dist/replies/digest.js";
 import { FilePendingSendStore } from "../dist/replies/pendingStore.js";
+import { validatePendingSendRecord } from "../dist/replies/recordValidation.js";
 import { WhatsAppSendService } from "../dist/replies/sendService.js";
 
 test("text send requires the unchanged digest and approval preview and cannot replay", async () => {
@@ -23,6 +26,7 @@ test("text send requires the unchanged digest and approval preview and cannot re
   const sent = await context.service.sendPrepared(prepared);
   assert.deepEqual(sent, { state: "sent", whatsappMessageId: "wa-1" });
   assert.equal(context.sender.text.length, 1);
+  assert.equal(context.sender.text[0][3], undefined);
   const terminal = await context.store.get(prepared.pendingId);
   assert.equal(terminal.payload, null);
   assert.equal(terminal.approvalPreview, null);
@@ -31,6 +35,215 @@ test("text send requires the unchanged digest and approval preview and cannot re
   assert.equal(terminalJson.includes("Friendly Tester"), false);
   assert.equal(terminalJson.includes("Approve this exact"), false);
   await assert.rejects(() => context.service.sendPrepared(prepared), /state is 'sent'/i);
+});
+
+test("reviewed text sends exact final edits with the reviewed preview and explicit null", async () => {
+  const context = await makeContext();
+  const thumbnail = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const linkPreview = {
+    matchedText: "https://example.com/story",
+    canonicalUrl: "https://example.com/story",
+    title: "Exact reviewed title",
+    description: "Exact reviewed description",
+    jpegThumbnailBase64: thumbnail.toString("base64"),
+    thumbnailSha256: createHash("sha256").update(thumbnail).digest("hex"),
+  };
+  const firstId = "15151515-1515-4151-8151-151515151515";
+  await context.service.sendReviewed({
+    pendingId: firstId,
+    kind: "text",
+    destination: { chatId: "chat-1" },
+    replyToMessageId: "reply-1",
+    text: "Final edited text https://example.com/story",
+    linkPreview,
+  });
+
+  assert.equal(context.sender.text.length, 1);
+  assert.deepEqual(context.sender.text[0], [
+    {
+      chatId: "chat-1",
+      transportJid: "chat-1@g.us",
+      kind: "group",
+      displayName: "Friendly Tester",
+    },
+    "Final edited text https://example.com/story",
+    "reply-1",
+    linkPreview,
+  ]);
+  assert.equal((await context.store.get(firstId)).state, "sent");
+
+  const secondId = "16161616-1616-4161-8161-161616161616";
+  await context.service.sendReviewed({
+    pendingId: secondId,
+    kind: "text",
+    destination: { e164: "+919876543210" },
+    text: "No card should be generated",
+    linkPreview: null,
+  });
+  assert.equal(context.sender.text[1][1], "No card should be generated");
+  assert.equal(context.sender.text[1][3], null);
+});
+
+test("a reviewed send ID can reach transport at most once", async () => {
+  const context = await makeContext();
+  const input = {
+    pendingId: "17171717-1717-4171-8171-171717171717",
+    kind: "text",
+    destination: { e164: "+919876543210" },
+    text: "Only once",
+    linkPreview: null,
+  };
+  const results = await Promise.allSettled([
+    context.service.sendReviewed(input),
+    context.service.sendReviewed(input),
+  ]);
+
+  assert.equal(context.sender.text.length, 1);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+});
+
+test("every reviewed link-card field is integrity bound before transport", async () => {
+  const pendingId = "21212121-2121-4212-8212-212121212121";
+  const thumbnail = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const payload = {
+    kind: "text",
+    destination: {
+      chatId: "group-1",
+      transportJid: "group-1@g.us",
+      kind: "group",
+      displayName: "Review group",
+    },
+    text: "https://example.com/story",
+    linkPreview: {
+      matchedText: "https://example.com/story",
+      canonicalUrl: "https://example.com/story",
+      title: "Story",
+      description: "Description",
+      jpegThumbnailBase64: thumbnail.toString("base64"),
+      thumbnailSha256: createHash("sha256").update(thumbnail).digest("hex"),
+    },
+  };
+  const approvalPreview = approvalPreviewFor(payload, pendingId);
+  const digest = digestSend(payload, approvalPreview, pendingId);
+  const record = {
+    id: pendingId,
+    state: "prepared",
+    messageKind: "text",
+    destinationKind: "group",
+    payload,
+    digest,
+    approvalPreview,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2026-01-01T00:10:00.000Z",
+  };
+  assert.equal(validatePendingSendRecord(record, pendingId, "/tmp/review-binding").digest, digest);
+
+  const mutations = [
+    (copy) => { copy.payload.linkPreview.matchedText = "https://example.com/other"; },
+    (copy) => { copy.payload.linkPreview.canonicalUrl = "https://example.com/other"; },
+    (copy) => { copy.payload.linkPreview.title = "Changed"; },
+    (copy) => { copy.payload.linkPreview.description = "Changed description"; },
+    (copy) => { copy.payload.linkPreview.jpegThumbnailBase64 = Buffer.from([0xff, 0xd8, 0x01, 0xff, 0xd9]).toString("base64"); },
+    (copy) => { copy.payload.linkPreview.thumbnailSha256 = "f".repeat(64); },
+  ];
+  for (const mutate of mutations) {
+    const copy = structuredClone(record);
+    mutate(copy);
+    assert.throws(
+      () => validatePendingSendRecord(copy, pendingId, "/tmp/review-binding"),
+      /integrity check/i,
+    );
+  }
+});
+
+test("review media helpers stage, replace, verify, and send only the final bytes", async () => {
+  const context = await makeContext();
+  await fs.writeFile(path.join(context.outboxDir, "initial.txt"), "initial bytes");
+  const pendingId = "18181818-1818-4181-8181-181818181818";
+  const initial = await context.service.stageReviewMedia({
+    pendingId,
+    outboxPath: "initial.txt",
+  });
+  assert.equal(initial.kind, "document");
+  const replacementBytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+  const replacement = await context.service.replaceReviewMedia({
+    pendingId,
+    bytes: replacementBytes,
+    fileName: "edited.png",
+  });
+  assert.equal(replacement.kind, "image");
+  assert.equal(replacement.sha256, createHash("sha256").update(replacementBytes).digest("hex"));
+  assert.deepEqual(
+    Buffer.from((await context.service.readReviewMedia({ pendingId, snapshot: replacement })).bytes),
+    replacementBytes,
+  );
+  await assert.rejects(
+    () => context.service.readReviewMedia({ pendingId, snapshot: initial }),
+    /snapshot changed/i,
+  );
+
+  await context.service.sendReviewed({
+    pendingId,
+    kind: "media",
+    destination: { chatId: "group-1" },
+    media: replacement,
+    caption: "Final caption",
+  });
+  assert.equal(context.sender.media.length, 1);
+  assert.deepEqual(Buffer.from(context.sender.media[0][1].bytes), replacementBytes);
+  assert.equal(context.sender.media[0][2], "Final caption");
+  await assert.rejects(() => fs.access(replacement.path), /ENOENT/u);
+});
+
+test("reviewed audio captions and forged preview hashes fail before transport", async () => {
+  const context = await makeContext();
+  const audioId = "19191919-1919-4191-8191-191919191919";
+  const audio = await context.service.replaceReviewMedia({
+    pendingId: audioId,
+    bytes: wavBytes(),
+    fileName: "voice.wav",
+  });
+  await assert.rejects(
+    () => context.service.sendReviewed({
+      pendingId: audioId,
+      kind: "media",
+      destination: { chatId: "group-1" },
+      media: audio,
+      caption: "Not supported",
+    }),
+    /audio messages do not support captions/i,
+  );
+  assert.equal(context.sender.media.length, 0);
+  assert.equal(await context.store.get(audioId), undefined);
+
+  await context.service.sendReviewed({
+    pendingId: audioId,
+    kind: "media",
+    destination: { chatId: "group-1" },
+    media: audio,
+  });
+  assert.equal(context.sender.media.length, 1);
+
+  const thumbnail = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  await assert.rejects(
+    () => context.service.sendReviewed({
+      pendingId: "20202020-2020-4202-8202-202020202020",
+      kind: "text",
+      destination: { e164: "+919876543210" },
+      text: "Invalid preview",
+      linkPreview: {
+        matchedText: "https://example.com/",
+        canonicalUrl: "https://example.com/",
+        title: "Example",
+        jpegThumbnailBase64: thumbnail.toString("base64"),
+        thumbnailSha256: "0".repeat(64),
+      },
+    }),
+    /preview is invalid/i,
+  );
+  assert.equal(context.sender.text.length, 0);
 });
 
 test("confirmation for one draft cannot authorize a second identical draft", async () => {
@@ -92,6 +305,56 @@ test("parallel confirmations cause at most one transport send", async () => {
   assert.equal(context.sender.text.length, 1);
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+});
+
+test("distinct confirmations serialize the complete claim-to-terminal transition", async () => {
+  let releaseFirst;
+  let markFirstStarted;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  const context = await makeContext({
+    textGates: [firstGate],
+    onTextStart(callNumber) {
+      if (callNumber === 1) markFirstStarted();
+    },
+  });
+  const first = await context.service.prepareText({ chatId: "chat-1", text: "first" });
+  const second = await context.service.prepareText({ chatId: "chat-1", text: "second" });
+
+  const firstSend = context.service.sendPrepared(first);
+  await firstStarted;
+  const secondSend = context.service.sendPrepared(second);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  assert.equal(context.sender.text.length, 1);
+  assert.equal(context.sender.maxActiveText, 1);
+  assert.equal((await context.store.get(second.pendingId)).state, "prepared");
+
+  releaseFirst();
+  assert.deepEqual(await Promise.all([firstSend, secondSend]), [
+    { state: "sent", whatsappMessageId: "wa-1" },
+    { state: "sent", whatsappMessageId: "wa-2" },
+  ]);
+  assert.equal(context.sender.maxActiveText, 1);
+});
+
+test("a rejected send releases the queue without retrying its transport", async () => {
+  const context = await makeContext({ failTransportAt: 1 });
+  const first = await context.service.prepareText({ chatId: "chat-1", text: "maybe first" });
+  const second = await context.service.prepareText({ chatId: "chat-1", text: "definitely second" });
+
+  const results = await Promise.allSettled([
+    context.service.sendPrepared(first),
+    context.service.sendPrepared(second),
+  ]);
+
+  assert.equal(results[0].status, "rejected");
+  assert.equal(results[1].status, "fulfilled");
+  assert.deepEqual(results[1].value, { state: "sent", whatsappMessageId: "wa-2" });
+  assert.equal(context.sender.text.length, 2);
+  assert.equal(context.sender.maxActiveText, 1);
+  assert.equal((await context.store.get(first.pendingId)).state, "uncertain");
+  assert.equal((await context.store.get(second.pendingId)).state, "sent");
 });
 
 test("a transport failure becomes uncertain and is never retried", async () => {
@@ -453,16 +716,30 @@ async function makeContext(overrides = {}) {
 class FakeSender {
   text = [];
   media = [];
+  activeText = 0;
+  maxActiveText = 0;
 
   constructor(options) {
     this.options = options;
   }
 
   async sendText(...args) {
-    this.text.push(args);
-    if (this.options.gate) await this.options.gate;
-    if (this.options.failTransport) throw new Error("network details must not escape");
-    return { messageId: `wa-${this.text.length}` };
+    const callNumber = this.text.push(args);
+    this.activeText += 1;
+    this.maxActiveText = Math.max(this.maxActiveText, this.activeText);
+    this.options.onTextStart?.(callNumber);
+    try {
+      if (this.options.gate) await this.options.gate;
+      if (this.options.textGates?.[callNumber - 1]) {
+        await this.options.textGates[callNumber - 1];
+      }
+      if (this.options.failTransport || this.options.failTransportAt === callNumber) {
+        throw new Error("network details must not escape");
+      }
+      return { messageId: `wa-${callNumber}` };
+    } finally {
+      this.activeText -= 1;
+    }
   }
 
   async sendMedia(...args) {

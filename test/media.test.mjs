@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -58,6 +59,49 @@ test("outbox media is confined, snapshotted, and hash verified", async () => {
   await fs.writeFile(snapshot.path, Buffer.from("changed"));
   await assert.rejects(() => service.readVerified(snapshot, snapshot.pendingId), /snapshot changed/i);
   await assert.rejects(() => service.snapshot("../secret", "22222222-2222-4222-8222-222222222222"), /traversal/i);
+});
+
+test("review uploads are bounded, sniffed, hashed, and atomically replace only their ID snapshot", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-review-upload-"));
+  const service = new OutboxMediaService(
+    path.join(root, "outbox"),
+    path.join(root, "pending"),
+  );
+  const pendingId = "12121212-1212-4121-8121-121212121212";
+  const initial = await service.snapshotBytes(PNG_BYTES, "../photo.png", pendingId);
+  assert.equal(initial.originalName, ".._photo.png");
+  assert.equal(initial.kind, "image");
+  assert.equal(initial.mimeType, "image/png");
+  assert.equal(initial.sha256, createSha256(PNG_BYTES));
+
+  const replacement = await service.snapshotBytes(WAV_BYTES, "voice.wav", pendingId);
+  assert.equal(replacement.path, initial.path);
+  assert.equal(replacement.kind, "audio");
+  assert.equal(replacement.mimeType, "audio/wav");
+  assert.equal(replacement.sha256, createSha256(WAV_BYTES));
+  assert.deepEqual(
+    Buffer.from((await service.readVerified(replacement, pendingId)).bytes),
+    WAV_BYTES,
+  );
+  await assert.rejects(() => service.readVerified(initial, pendingId), /snapshot changed/i);
+
+  if (process.platform !== "win32") {
+    assert.equal((await fs.stat(replacement.path)).mode & 0o777, 0o600);
+  }
+
+  const small = new OutboxMediaService(
+    path.join(root, "small-outbox"),
+    path.join(root, "small-pending"),
+    4,
+  );
+  await assert.rejects(
+    () => small.snapshotBytes(Buffer.alloc(5), "too-large.bin", "13131313-1313-4131-8131-131313131313"),
+    /exceeds/i,
+  );
+  await assert.rejects(
+    () => service.snapshotBytes(PNG_BYTES, "", "14141414-1414-4141-8141-141414141414"),
+    /filename is invalid/i,
+  );
 });
 
 test("outbox refuses symlinks", async (t) => {
@@ -290,6 +334,44 @@ test("inbound cache reconciliation removes bytes outside retained message IDs", 
   await assert.rejects(() => service.readResource("old"), /download.*before reading/i);
 });
 
+test("inbound cache commit is atomic with concurrent broker reconciliation", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-cache-race-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const source = new FakeMediaSource();
+  source.descriptors.set("shared", { messageId: "shared", mediaType: "document" });
+  source.bytes.set("shared", Buffer.from("shared attachment"));
+  let markDataCached;
+  let releaseCommit;
+  const dataCached = new Promise((resolve) => { markDataCached = resolve; });
+  const commitGate = new Promise((resolve) => { releaseCommit = resolve; });
+  class PausedInboundMediaService extends InboundMediaService {
+    async afterDataCached() {
+      markDataCached();
+      await commitGate;
+    }
+  }
+  const service = new PausedInboundMediaService(source, root);
+
+  const download = service.get("shared");
+  await dataCached;
+  let reconciliationFinished = false;
+  const reconciliation = service.reconcile(["shared"])
+    .then((result) => {
+      reconciliationFinished = true;
+      return result;
+    });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reconciliationFinished, false);
+
+  releaseCommit();
+  assert.equal((await download).delivery, "resource");
+  assert.deepEqual(await reconciliation, { removed: 0 });
+  assert.deepEqual(
+    Buffer.from((await service.readResource("shared")).bytes),
+    Buffer.from("shared attachment"),
+  );
+});
+
 test("a missing retained descriptor invalidates an existing media cache", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-missing-"));
   const source = new FakeMediaSource();
@@ -356,4 +438,8 @@ class FakeMediaSource {
     if (!value) throw new Error("missing fake bytes");
     return (async function* () { yield value; })();
   }
+}
+
+function createSha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }

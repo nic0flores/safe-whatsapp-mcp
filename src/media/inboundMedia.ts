@@ -1,4 +1,4 @@
-// Agent context note: Streams inbound media through a hard cap, signature-verifies safe inline MIME, reauthorizes after async boundaries, and reconciles caches. Tests: test/media.test.mjs and test/mcp-tools.test.mjs. Unsafe roots, view-once, deleted, expired, unavailable, oversized, or unverified inline media must never be returned; update this note after meaningful behavior changes.
+// Agent context note: Streams inbound media through a hard cap, signature-verifies safe inline MIME, reauthorizes after async boundaries, and serializes cache reads/writes/reconciliation. Tests: test/media.test.mjs and test/mcp-tools.test.mjs. Unsafe roots, partial cache pairs, view-once, deleted, expired, unavailable, oversized, or unverified inline media must never be returned; update this note after meaningful behavior changes.
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
@@ -42,6 +42,8 @@ interface CachedMediaRecord {
 }
 
 export class InboundMediaService implements InboundMediaReader {
+  private cacheQueue: Promise<unknown> = Promise.resolve();
+
   constructor(
     private readonly source: InboundMediaSource,
     private readonly mediaDir: string,
@@ -49,51 +51,51 @@ export class InboundMediaService implements InboundMediaReader {
     private readonly maxBytes = MAX_MEDIA_BYTES,
   ) {}
 
+  protected async afterDataCached(): Promise<void> {}
+
   async get(messageId: string): Promise<InboundMediaResult> {
-    const { descriptor, bytes, metadata, inlineSafe } = await this.downloadAllowed(messageId);
+    const { bytes, metadata, inlineSafe } = await this.downloadAllowed(messageId);
     if (inlineSafe && bytes.byteLength <= this.maxInlineBytes) {
       return { delivery: "inline", metadata, bytes };
     }
-    await this.cache(messageId, bytes, metadata);
-    try {
-      await this.assertAllowed(messageId);
-    } catch (error) {
-      await this.removeCache(messageId);
-      throw error;
-    }
-    return {
-      delivery: "resource",
-      metadata,
-      uri: mediaResourceUri(descriptor.messageId),
-    };
+    return this.withCacheLock(async () => {
+      await this.cacheLocked(messageId, bytes, metadata);
+      const current = await this.assertAllowedLocked(messageId);
+      return {
+        delivery: "resource",
+        metadata,
+        uri: mediaResourceUri(current.messageId),
+      };
+    });
   }
 
   async readResource(messageId: string): Promise<{ metadata: InboundMediaMetadata; bytes: Uint8Array }> {
-    await this.assertAllowed(messageId);
-    const paths = await this.cachePaths(messageId, false);
-    try {
-      const [bytes, rawMetadata] = await Promise.all([
-        readNoFollow(paths.data),
-        readNoFollow(paths.metadata),
-      ]);
-      const cached = JSON.parse(rawMetadata.toString("utf8")) as CachedMediaRecord;
-      const metadata = cached.metadata;
-      if (bytes.byteLength !== metadata.size || digest(bytes) !== metadata.sha256) {
-        await this.removeCache(messageId);
-        throw new SafeWhatsAppError("Cached media is unavailable.", "media_unavailable");
+    return this.withCacheLock(async () => {
+      await this.assertAllowedLocked(messageId);
+      const paths = await this.cachePaths(messageId, false);
+      try {
+        const [bytes, rawMetadata] = await Promise.all([
+          readNoFollow(paths.data),
+          readNoFollow(paths.metadata),
+        ]);
+        const cached = JSON.parse(rawMetadata.toString("utf8")) as CachedMediaRecord;
+        const metadata = cached.metadata;
+        if (bytes.byteLength !== metadata.size || digest(bytes) !== metadata.sha256) {
+          await this.removeCacheLocked(messageId);
+          throw new SafeWhatsAppError("Cached media is unavailable.", "media_unavailable");
+        }
+        const current = await this.assertAllowedLocked(messageId);
+        return { metadata: { ...metadata, mediaType: current.mediaType }, bytes };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new SafeWhatsAppError("Download the media before reading its resource.", "media_not_downloaded");
+        }
+        throw error;
       }
-      const current = await this.assertAllowed(messageId);
-      return { metadata: { ...metadata, mediaType: current.mediaType }, bytes };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new SafeWhatsAppError("Download the media before reading its resource.", "media_not_downloaded");
-      }
-      throw error;
-    }
+    });
   }
 
   private async downloadAllowed(messageId: string): Promise<{
-    descriptor: RetainedMediaDescriptor;
     bytes: Uint8Array;
     metadata: InboundMediaMetadata;
     inlineSafe: boolean;
@@ -115,7 +117,6 @@ export class InboundMediaService implements InboundMediaReader {
       sha256: digest(bytes),
     };
     return {
-      descriptor: current,
       bytes,
       metadata,
       inlineSafe: isSafeInlineMedia(current.mediaType, declaredMime, detectedMime),
@@ -123,43 +124,68 @@ export class InboundMediaService implements InboundMediaReader {
   }
 
   private async assertAllowed(messageId: string): Promise<RetainedMediaDescriptor> {
+    return this.validateAllowed(messageId, () => this.removeCache(messageId));
+  }
+
+  private async assertAllowedLocked(messageId: string): Promise<RetainedMediaDescriptor> {
+    return this.validateAllowed(messageId, () => this.removeCacheLocked(messageId));
+  }
+
+  private async validateAllowed(
+    messageId: string,
+    removeCache: () => Promise<void>,
+  ): Promise<RetainedMediaDescriptor> {
     if (!messageId || messageId.length > 512) {
       throw new SafeWhatsAppError("Invalid message ID.", "invalid_message_id");
     }
     const descriptor = await this.source.describe(messageId);
     if (!descriptor) {
-      await this.removeCache(messageId);
+      await removeCache();
       throw new SafeWhatsAppError("Media was not found.", "media_not_found");
     }
     if (descriptor.viewOnce) {
-      await this.removeCache(messageId);
+      await removeCache();
       throw new SafeWhatsAppError("View-once media cannot be accessed.", "view_once_refused");
     }
     if (descriptor.deleted) {
-      await this.removeCache(messageId);
+      await removeCache();
       throw new SafeWhatsAppError("The media message was deleted.", "media_deleted");
     }
     if (descriptor.expired) {
-      await this.removeCache(messageId);
+      await removeCache();
       throw new SafeWhatsAppError("The media message expired.", "media_expired");
     }
     if (descriptor.size !== undefined && descriptor.size > this.maxBytes) {
-      await this.removeCache(messageId);
+      await removeCache();
       throw new SafeWhatsAppError("Media exceeds the 25 MiB limit.", "media_too_large");
     }
     return descriptor;
   }
 
-  private async cache(messageId: string, bytes: Uint8Array, metadata: InboundMediaMetadata): Promise<void> {
+  private async cacheLocked(
+    messageId: string,
+    bytes: Uint8Array,
+    metadata: InboundMediaMetadata,
+  ): Promise<void> {
     const paths = await this.cachePaths(messageId, true);
-    await atomicWrite(paths.data, bytes);
-    await atomicWrite(paths.metadata, Buffer.from(JSON.stringify({
-      metadata,
-      cachedAt: new Date().toISOString(),
-    } satisfies CachedMediaRecord), "utf8"));
+    try {
+      await atomicWrite(paths.data, bytes);
+      await this.afterDataCached();
+      await atomicWrite(paths.metadata, Buffer.from(JSON.stringify({
+        metadata,
+        cachedAt: new Date().toISOString(),
+      } satisfies CachedMediaRecord), "utf8"));
+    } catch (error) {
+      await this.removeCacheLocked(messageId).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async removeCache(messageId: string): Promise<void> {
+    await this.withCacheLock(() => this.removeCacheLocked(messageId));
+  }
+
+  private async removeCacheLocked(messageId: string): Promise<void> {
     const paths = await this.cachePaths(messageId, false);
     await Promise.all([unlinkIfExists(paths.data), unlinkIfExists(paths.metadata)]);
   }
@@ -172,6 +198,15 @@ export class InboundMediaService implements InboundMediaReader {
     retainedMessageIds: Iterable<string>,
     cachedOnOrAfter?: Date,
     now = new Date(),
+  ): Promise<{ removed: number }> {
+    return this.withCacheLock(() =>
+      this.reconcileLocked(retainedMessageIds, cachedOnOrAfter, now));
+  }
+
+  private async reconcileLocked(
+    retainedMessageIds: Iterable<string>,
+    cachedOnOrAfter: Date | undefined,
+    now: Date,
   ): Promise<{ removed: number }> {
     const retained = new Set(retainedMessageIds);
     const root = await this.safeMediaDirectory(true);
@@ -214,6 +249,12 @@ export class InboundMediaService implements InboundMediaReader {
       removed += 1;
     }
     return { removed };
+  }
+
+  private async withCacheLock<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.cacheQueue.then(operation, operation);
+    this.cacheQueue = next.then(() => undefined, () => undefined);
+    return next;
   }
 
   private async cachePaths(messageId: string, create: boolean): Promise<{ data: string; metadata: string }> {

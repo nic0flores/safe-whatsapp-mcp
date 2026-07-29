@@ -20,19 +20,41 @@ release/
 *.mobileprovision
 
 # Safe WhatsApp account state (never commit)
-.safe-whatsapp-mcp/
+.safe-whatsapp-mcp*/
 .safe-whatsapp-mcp-state
 /config.json
+/config.toml
 credential-vault.json
 state.sqlite3
 state.sqlite3-*
 process.lock
 process.lock.*
+broker.json
+.broker.json.*.tmp
+broker-launch.lock
+broker-launch.lock.*
 /audit.log
 /pending/
 /media/
 /outbox/
 .safe-whatsapp-codex-setup.lock*
+
+# Common unofficial WhatsApp auth exports and pairing captures
+auth_info_baileys/
+baileys_auth_info/
+.wwebjs_auth/
+.wwebjs_cache/
+creds.json
+/qr*.png
+/whatsapp-qr*.png
+
+# Local database snapshots and backups
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
 
 # Custom state-directory names cannot be ignored safely; keep every
 # SAFE_WHATSAPP_MCP_STATE_DIR outside repositories and synchronized folders.

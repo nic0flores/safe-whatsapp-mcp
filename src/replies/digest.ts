@@ -1,6 +1,6 @@
-// Agent context note: Canonicalizes ID-bound staged sends and produces a bidi-safe exact human approval preview. Tests: test/send-service.test.mjs. Bind the pending ID and every send-relevant field, visibly escape invisible format controls, and never include mutable filesystem paths; update this note after meaningful behavior changes.
+// Agent context note: Canonicalizes ID-bound staged/reviewed sends and produces a bidi-safe exact approval preview. Tests: test/send-service.test.mjs. Bind every send and link-card field while representing thumbnail bytes by hash in human-facing output; update this note after meaningful behavior changes.
 import { createHash } from "node:crypto";
-import type { PendingPayload, ResolvedDestination } from "./types.js";
+import type { PendingLinkPreview, PendingPayload, ResolvedDestination } from "./types.js";
 
 export function approvalPreviewFor(payload: PendingPayload, pendingId: string): string {
   const recipient = publicRecipient(payload.destination, false);
@@ -11,6 +11,9 @@ export function approvalPreviewFor(payload: PendingPayload, pendingId: string): 
         recipient,
         replyToMessageId: payload.replyToMessageId ?? null,
         text: payload.text,
+        ...(payload.linkPreview !== undefined
+          ? { linkPreview: displayLinkPreview(payload.linkPreview) }
+          : {}),
       }
     : {
         pendingId,
@@ -40,6 +43,9 @@ export function digestSend(
         destination: canonicalDestination(payload.destination),
         replyToMessageId: payload.replyToMessageId ?? null,
         text: payload.text,
+        ...(payload.linkPreview !== undefined
+          ? { linkPreview: canonicalLinkPreview(payload.linkPreview) }
+          : {}),
         approvalPreview,
       }
     : {
@@ -66,7 +72,14 @@ export function publicPreview(payload: PendingPayload): Record<string, unknown> 
     replyToMessageId: payload.replyToMessageId ?? null,
   };
   return payload.kind === "text"
-    ? { ...common, kind: "text", text: visibleText(payload.text) }
+    ? {
+        ...common,
+        kind: "text",
+        text: visibleText(payload.text),
+        ...(payload.linkPreview !== undefined
+          ? { linkPreview: displayLinkPreview(payload.linkPreview) }
+          : {}),
+      }
     : {
         ...common,
         kind: "media",
@@ -76,6 +89,29 @@ export function publicPreview(payload: PendingPayload): Record<string, unknown> 
         sha256: payload.media.sha256,
         caption: payload.caption === undefined ? null : visibleText(payload.caption),
       };
+}
+
+function canonicalLinkPreview(preview: PendingLinkPreview | null): Record<string, unknown> | null {
+  if (preview === null) return null;
+  return {
+    matchedText: preview.matchedText,
+    canonicalUrl: preview.canonicalUrl,
+    title: preview.title,
+    description: preview.description ?? null,
+    jpegThumbnailBase64: preview.jpegThumbnailBase64 ?? null,
+    thumbnailSha256: preview.thumbnailSha256 ?? null,
+  };
+}
+
+function displayLinkPreview(preview: PendingLinkPreview | null): Record<string, unknown> | null {
+  if (preview === null) return null;
+  return {
+    matchedText: visibleText(preview.matchedText),
+    canonicalUrl: visibleText(preview.canonicalUrl),
+    title: visibleText(preview.title),
+    description: preview.description === undefined ? null : visibleText(preview.description),
+    thumbnailSha256: preview.thumbnailSha256 ?? null,
+  };
 }
 
 function canonicalDestination(destination: ResolvedDestination): Record<string, unknown> {

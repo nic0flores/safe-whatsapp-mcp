@@ -158,6 +158,7 @@ export async function purgeLocalState(
       paths.mediaDir,
       paths.pendingDir,
       paths.auditFile,
+      paths.brokerFile,
       `${paths.lockFile}.reclaim`,
     ];
     for (const target of exactTargets) await fs.rm(target, { recursive: true, force: true });
@@ -167,7 +168,7 @@ export async function purgeLocalState(
     const entries = await fs.readdir(paths.rootDir).catch(() => []);
     for (const entry of entries) {
       if (isOwnedStateTemporaryEntry(paths, entry)) {
-        await fs.rm(path.join(paths.rootDir, entry), { force: true });
+        await fs.rm(path.join(paths.rootDir, entry), { recursive: true, force: true });
       }
     }
   } finally {

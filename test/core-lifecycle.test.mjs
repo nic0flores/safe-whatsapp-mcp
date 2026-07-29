@@ -38,6 +38,7 @@ test("purge removes exact local state while preserving the user-managed outbox",
     writeFile(paths.configFile, "{}"),
     writeFile(paths.databaseFile, "db"),
     writeFile(paths.auditFile, "audit"),
+    writeFile(paths.brokerFile, "stale broker"),
     writeFile(path.join(paths.mediaDir, "media"), "media"),
     writeFile(path.join(paths.pendingDir, "pending"), "pending"),
     writeFile(path.join(paths.outboxDir, "keep.txt"), "keep"),
@@ -46,6 +47,9 @@ test("purge removes exact local state while preserving the user-managed outbox",
     writeFile(path.join(root, "audit.log.1.11111111-1111-4111-8111-111111111111.tmp"), "temp"),
     writeFile(path.join(root, "process.lock.candidate.crash"), "temp"),
     writeFile(path.join(root, "process.lock.candidate.44444444-4444-4444-8444-444444444444"), "temp"),
+    writeFile(path.join(root, ".broker.json.1.55555555-5555-4555-8555-555555555555.tmp"), "temp"),
+    writeFile(path.join(root, "broker-launch.lock.candidate.66666666-6666-4666-8666-666666666666"), "temp"),
+    mkdir(path.join(root, "broker-launch.lock.reclaim.stale.77777777-7777-4777-8777-777777777777")),
     writeFile(path.join(root, "audit.log.notes.tmp"), "keep"),
     writeFile(path.join(root, ".config.json.notes.tmp"), "keep"),
     writeFile(path.join(root, "process.lock.stale.notes"), "keep"),
@@ -54,11 +58,15 @@ test("purge removes exact local state while preserving the user-managed outbox",
     await purgeLocalState(paths, { masterKeyStore: new MemoryMasterKeyStore() });
     await assert.rejects(access(paths.configFile));
     await assert.rejects(access(paths.auditFile));
+    await assert.rejects(access(paths.brokerFile));
     await access(path.join(paths.outboxDir, "keep.txt"));
     await access(paths.ownershipMarker);
     await assert.rejects(access(path.join(root, ".config.json.1.33333333-3333-4333-8333-333333333333.tmp")));
     await assert.rejects(access(path.join(root, "audit.log.1.11111111-1111-4111-8111-111111111111.tmp")));
     await assert.rejects(access(path.join(root, "process.lock.candidate.44444444-4444-4444-8444-444444444444")));
+    await assert.rejects(access(path.join(root, ".broker.json.1.55555555-5555-4555-8555-555555555555.tmp")));
+    await assert.rejects(access(path.join(root, "broker-launch.lock.candidate.66666666-6666-4666-8666-666666666666")));
+    await assert.rejects(access(path.join(root, "broker-launch.lock.reclaim.stale.77777777-7777-4777-8777-777777777777")));
     await access(path.join(root, "audit.log.notes.tmp"));
     await access(path.join(root, ".config.json.notes.tmp"));
     await access(path.join(root, "process.lock.stale.notes"));

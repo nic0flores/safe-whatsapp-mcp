@@ -1,4 +1,4 @@
-// Agent context note: Verifies the publish tarball, canonical safewhatsapp CLI, safe setup/pairing boundaries, and exact MCP tool surface across supported npm platforms. Tests: this script in CI. Critical invariant: child processes invoke reviewed JS entrypoints without a shell while the generated npm command shim is separately validated; no local WhatsApp state or undeclared tool ships. Update this note after meaningful package-contract changes.
+// Agent context note: Verifies the publish tarball, canonical safewhatsapp CLI, safe setup/pairing boundaries, exact MCP tool surface, and shared-broker lifecycle across supported npm platforms. Tests: this script in CI. Critical invariant: child processes invoke reviewed JS entrypoints without a shell while the generated npm command shim is separately validated; no local WhatsApp state or undeclared tool ships. Update this note after meaningful package-contract changes.
 import { execFile as execFileCallback } from "node:child_process";
 import { access, mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -168,27 +168,6 @@ try {
   if (error.stdout?.includes("qr.png")) throw new Error("Packaged connect exposed QR output");
 }
 
-const client = new Client({ name: "safe-whatsapp-mcp-smoke", version: "0.0.0" });
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [cliEntry, "serve"],
-  env: {
-    ...process.env,
-    SAFE_WHATSAPP_MCP_ENABLE_SEND: "false",
-    SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND: "false",
-    SAFE_WHATSAPP_MCP_STATE_DIR: path.join(tmp, "smoke-state"),
-  },
-});
-
-let tools;
-try {
-  await withTimeout(client.connect(transport), "MCP connect");
-  tools = await withTimeout(client.listTools(), "MCP listTools");
-} finally {
-  await withTimeout(client.close(), "MCP client close").catch(() => {});
-  await withTimeout(transport.close(), "MCP transport close").catch(() => {});
-}
-
 const expectedTools = [
   "discard_prepared_whatsapp_message",
   "fetch_older_whatsapp_messages",
@@ -196,15 +175,69 @@ const expectedTools = [
   "get_whatsapp_status",
   "list_whatsapp_chats",
   "list_whatsapp_sends",
+  "open_whatsapp_send_review",
   "prepare_whatsapp_media_send",
   "prepare_whatsapp_text_send",
   "read_whatsapp_chat",
   "search_whatsapp_messages",
   "send_prepared_whatsapp_message",
 ];
-const actualTools = tools.tools.map((tool) => tool.name).sort();
-if (JSON.stringify(actualTools) !== JSON.stringify(expectedTools)) {
-  throw new Error(`Unexpected MCP tools: ${actualTools.join(", ")}`);
+const stateDir = path.join(tmp, "smoke-state");
+const mcpEnv = {
+  ...process.env,
+  SAFE_WHATSAPP_MCP_ENABLE_SEND: "false",
+  SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND: "false",
+  SAFE_WHATSAPP_MCP_STATE_DIR: stateDir,
+};
+const first = mcpChild("first", mcpEnv);
+const second = mcpChild("second", mcpEnv);
+let brokerPid;
+
+try {
+  await Promise.all([
+    withTimeout(first.client.connect(first.transport), "first MCP connect"),
+    withTimeout(second.client.connect(second.transport), "second MCP connect"),
+  ]);
+
+  const [firstTools, secondTools, descriptor, lock] = await Promise.all([
+    withTimeout(first.client.listTools(), "first MCP listTools"),
+    withTimeout(second.client.listTools(), "second MCP listTools"),
+    readJsonWhenPresent(path.join(stateDir, "broker.json")),
+    readJsonWhenPresent(path.join(stateDir, "process.lock")),
+  ]);
+  assertExactTools(firstTools, "first");
+  assertExactTools(secondTools, "second");
+  brokerPid = descriptor.pid;
+  if (!Number.isSafeInteger(brokerPid) || lock.pid !== brokerPid) {
+    throw new Error("Installed MCP clients did not share one broker process");
+  }
+
+  const [firstStatus, secondStatus] = await Promise.all([
+    getStatus(first.client, "first"),
+    getStatus(second.client, "second"),
+  ]);
+  assertOfflineStatus(firstStatus, "first");
+  assertOfflineStatus(secondStatus, "second");
+  if (JSON.stringify(firstStatus.structuredContent) !==
+      JSON.stringify(secondStatus.structuredContent)) {
+    throw new Error("Concurrent installed MCP clients returned different status data");
+  }
+
+  await closeMcpChild(first);
+  assertOfflineStatus(await getStatus(second.client, "surviving second"), "surviving second");
+  await closeMcpChild(second);
+  await waitForMissing([
+    path.join(stateDir, "broker.json"),
+    path.join(stateDir, "process.lock"),
+  ]);
+} catch (error) {
+  if (error instanceof Error) {
+    error.message += `\nfirst stderr: ${first.stderr.trim()}\nsecond stderr: ${second.stderr.trim()}`;
+  }
+  throw error;
+} finally {
+  await Promise.all([closeMcpChild(first), closeMcpChild(second)]);
+  await stopSmokeBroker(brokerPid, stateDir);
 }
 
 console.log(`Smoke package OK: ${pack.filename}`);
@@ -224,4 +257,124 @@ async function assertNoStaleBuild(files) {
       throw new Error(`Package contains stale compiled output: ${entry}`);
     }
   }
+}
+
+function mcpChild(name, env) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [cliEntry, "serve"],
+    env,
+    stderr: "pipe",
+  });
+  const child = {
+    client: new Client({ name: `safe-whatsapp-mcp-smoke-${name}`, version: "0.0.0" }),
+    transport,
+    stderr: "",
+    closed: false,
+  };
+  transport.stderr?.on("data", (chunk) => { child.stderr += chunk.toString(); });
+  return child;
+}
+
+async function closeMcpChild(child) {
+  if (child.closed) return;
+  child.closed = true;
+  await withTimeout(child.client.close(), "MCP client close").catch(() => undefined);
+  await withTimeout(child.transport.close(), "MCP transport close").catch(() => undefined);
+}
+
+async function getStatus(client, label) {
+  return withTimeout(
+    client.callTool({ name: "get_whatsapp_status", arguments: {} }),
+    `${label} get_whatsapp_status`,
+  );
+}
+
+function assertExactTools(response, label) {
+  const actual = response.tools.map((tool) => tool.name).sort();
+  if (response.tools.length !== expectedTools.length ||
+      JSON.stringify(actual) !== JSON.stringify(expectedTools)) {
+    throw new Error(`Unexpected ${label} MCP tools: ${actual.join(", ")}`);
+  }
+}
+
+function assertOfflineStatus(result, label) {
+  const status = result.structuredContent;
+  if (
+    result.isError !== undefined ||
+    status?.ok !== true ||
+    status.data?.paired !== false ||
+    status.data?.connected !== false ||
+    status.data?.sendEnabled !== false ||
+    status.data?.mediaSendEnabled !== false
+  ) {
+    throw new Error(`Unexpected ${label} MCP status: ${JSON.stringify(status)}`);
+  }
+}
+
+async function readJsonWhenPresent(filePath, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(await readFile(filePath, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await pause(50);
+  }
+  throw new Error(`Timed out waiting for ${path.basename(filePath)}`);
+}
+
+async function waitForMissing(filePaths, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const present = await Promise.all(filePaths.map(async (filePath) => {
+      try {
+        await access(filePath);
+        return true;
+      } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+    }));
+    if (present.every((value) => !value)) return;
+    await pause(50);
+  }
+  throw new Error(`Timed out waiting for broker files to disappear: ${filePaths.join(", ")}`);
+}
+
+async function stopSmokeBroker(pid, stateDir) {
+  const [descriptor, lock] = await Promise.all([
+    readJsonIfPresent(path.join(stateDir, "broker.json")),
+    readJsonIfPresent(path.join(stateDir, "process.lock")),
+  ]);
+  if (
+    !descriptor ||
+    !lock ||
+    !Number.isSafeInteger(descriptor.pid) ||
+    descriptor.pid !== lock.pid ||
+    (Number.isSafeInteger(pid) && descriptor.pid !== pid)
+  ) return;
+  try {
+    process.kill(descriptor.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  await waitForMissing([
+    path.join(stateDir, "broker.json"),
+    path.join(stateDir, "process.lock"),
+  ], 3_000).catch(() => undefined);
+}
+
+async function readJsonIfPresent(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function pause(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

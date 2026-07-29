@@ -1,4 +1,4 @@
-// Agent context note: Defines staged WhatsApp send records and injected resolver/transport boundaries. Tests: test/send-service.test.mjs. Confirmation must never accept an unstaged destination or payload; update this note after meaningful behavior changes.
+// Agent context note: Defines legacy staged sends plus browser-reviewed payloads and injected resolver/transport boundaries. Tests: test/send-service.test.mjs. Every transport-relevant preview/media field must stay ID-bound and integrity checked; update this note after meaningful behavior changes.
 import type { OutboundMediaContent, OutboundMediaSnapshot } from "../media/types.js";
 
 export interface DestinationInput {
@@ -24,6 +24,7 @@ export interface WhatsAppOutboundSender {
     destination: ResolvedDestination,
     text: string,
     replyToMessageId?: string,
+    linkPreview?: PendingLinkPreview | null,
   ): Promise<{ messageId: string }>;
   sendMedia(
     destination: ResolvedDestination,
@@ -33,11 +34,22 @@ export interface WhatsAppOutboundSender {
   ): Promise<{ messageId: string }>;
 }
 
+export interface PendingLinkPreview {
+  matchedText: string;
+  canonicalUrl: string;
+  title: string;
+  description?: string;
+  jpegThumbnailBase64?: string;
+  thumbnailSha256?: string;
+}
+
 export interface PendingTextPayload {
   kind: "text";
   destination: ResolvedDestination;
   text: string;
   replyToMessageId?: string;
+  /** Undefined preserves legacy Baileys behavior; null explicitly disables preview fetching. */
+  linkPreview?: PendingLinkPreview | null;
 }
 
 export interface PendingMediaPayload {
@@ -49,6 +61,24 @@ export interface PendingMediaPayload {
 }
 
 export type PendingPayload = PendingTextPayload | PendingMediaPayload;
+
+export type ReviewedSendInput = {
+  pendingId: string;
+  destination: DestinationInput;
+  replyToMessageId?: string;
+} & (
+  | {
+      kind: "text";
+      text: string;
+      /** Browser-reviewed sends always provide either an exact preview or explicit null. */
+      linkPreview: PendingLinkPreview | null;
+    }
+  | {
+      kind: "media";
+      media: OutboundMediaSnapshot;
+      caption?: string;
+    }
+);
 export type PendingSendState =
   | "prepared"
   | "sending"

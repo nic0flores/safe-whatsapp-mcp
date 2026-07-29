@@ -23,13 +23,19 @@ enabled_tools = [
   "list_whatsapp_sends",
   "prepare_whatsapp_text_send",
   "prepare_whatsapp_media_send",
+  "open_whatsapp_send_review",
   "send_prepared_whatsapp_message",
   "discard_prepared_whatsapp_message",
 ]
 
 [mcp_servers.safe_whatsapp.env]
+# Text-only sending sets the first gate true. Media sending requires both gates true.
 SAFE_WHATSAPP_MCP_ENABLE_SEND = "false"
 SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND = "false"
+
+[mcp_servers.safe_whatsapp.tools.open_whatsapp_send_review]
+# This MCP call only opens a private local page; it cannot send.
+approval_mode = "approve"
 
 [mcp_servers.safe_whatsapp.tools.send_prepared_whatsapp_message]
 approval_mode = "prompt"

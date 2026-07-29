@@ -25,14 +25,15 @@ test("CLI exposes help/version and has an executable generated shebang", async (
     assert.notEqual((await fs.stat(cli)).mode & 0o100, 0);
   }
   const help = await execFile(process.execPath, [cli, "--help"]);
-  assert.match(help.stdout, /^safewhatsapp 0\.1\.0/mu);
+  assert.match(help.stdout, /^safewhatsapp 0\.2\.0/mu);
   assert.match(help.stdout, /serve/u);
-  assert.match(help.stdout, /setup-codex \[--enable-send\]/u);
+  assert.match(help.stdout, /setup-codex \[--enable-send\] \[--enable-media-send\]/u);
   assert.match(help.stdout, /disconnect/u);
   assert.match(help.stdout, /LOCAL-ONLY purge/u);
   assert.match(help.stdout, /clear account state/u);
+  assert.doesNotMatch(help.stdout, /^\s+safewhatsapp broker\b/mu);
   const version = await execFile(process.execPath, [cli, "--version"]);
-  assert.equal(version.stdout.trim(), "0.1.0");
+  assert.equal(version.stdout.trim(), "0.2.0");
   await assert.rejects(
     execFile(process.execPath, [cli, "unknown-command"]),
     (error) => {
@@ -40,6 +41,37 @@ test("CLI exposes help/version and has an executable generated shebang", async (
       return true;
     },
   );
+  await assert.rejects(
+    execFile(process.execPath, [cli, "setup-codex", "--enable-media-send"]),
+    (error) => {
+      assert.match(error.stderr, /setup-codex \[--enable-send\] \[--enable-media-send\]/u);
+      assert.match(error.stderr, /invalid_arguments/u);
+      return true;
+    },
+  );
+  await assert.rejects(
+    execFile(process.execPath, [cli, "setup-codex", "--enable-send", "--enable-send"]),
+    (error) => {
+      assert.match(error.stderr, /invalid_arguments/u);
+      return true;
+    },
+  );
+  const sourceEnvironment = { ...process.env };
+  delete sourceEnvironment.SAFE_WHATSAPP_MCP_STANDALONE_EXECUTABLE;
+  delete sourceEnvironment.SAFE_WHATSAPP_MCP_STANDALONE_BUNDLE;
+  for (const flags of [
+    ["--enable-send", "--enable-media-send"],
+    ["--enable-media-send", "--enable-send"],
+  ]) {
+    await assert.rejects(
+      execFile(process.execPath, [cli, "setup-codex", ...flags], { env: sourceEnvironment }),
+      (error) => {
+        assert.match(error.stderr, /standalone_install_required/u);
+        assert.doesNotMatch(error.stderr, /invalid_arguments/u);
+        return true;
+      },
+    );
+  }
 });
 
 test("disconnect runs directly without an interactive confirmation", async () => {
@@ -78,7 +110,7 @@ test("a broken native credential-store binding stays behind the safe error bound
     NAPI_RS_NATIVE_LIBRARY_PATH: "/definitely/not/a/keyring.node",
   };
   const version = await execFile(process.execPath, [cli, "--version"], { env });
-  assert.equal(version.stdout.trim(), "0.1.0");
+  assert.equal(version.stdout.trim(), "0.2.0");
 
   const keyStoreUrl = pathToFileURL(path.resolve("dist/auth/masterKeyStore.js")).href;
   const script = [

@@ -1,4 +1,4 @@
-// Agent context note: Owns the state marker, recognizes the vault descriptor, and clears account tables/files/journals while preserving config/outbox. Tests: test/account-lifecycle.test.mjs and test/core-lifecycle.test.mjs. Keep cleanup schema-agnostic, match only producer-shaped artifacts, and run destructive operations only while the process lock is held.
+// Agent context note: Owns the state marker, recognizes vault/broker coordination files, and clears account tables/files/journals while preserving config/outbox. Tests: test/account-lifecycle.test.mjs, test/core-lifecycle.test.mjs, and broker tests. Keep cleanup schema-agnostic, match only producer-shaped artifacts, and run destructive operations only while the process lock is held.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { SafeWhatsAppError } from "../errors.js";
@@ -119,10 +119,13 @@ function isKnownStateEntry(paths: StatePaths, entry: string): boolean {
     path.basename(paths.outboxDir),
     path.basename(paths.auditFile),
     path.basename(paths.lockFile),
+    path.basename(paths.brokerFile),
+    path.basename(paths.brokerLaunchLockFile),
     `${path.basename(paths.databaseFile)}-wal`,
     `${path.basename(paths.databaseFile)}-shm`,
     `${path.basename(paths.databaseFile)}-journal`,
     `${path.basename(paths.lockFile)}.reclaim`,
+    `${path.basename(paths.brokerLaunchLockFile)}.reclaim`,
   ]);
   if (exact.has(entry)) return true;
   return isOwnedStateTemporaryEntry(paths, entry);
@@ -130,13 +133,19 @@ function isKnownStateEntry(paths: StatePaths, entry: string): boolean {
 
 export function isOwnedStateTemporaryEntry(paths: StatePaths, entry: string): boolean {
   const lock = path.basename(paths.lockFile);
+  const launchLock = path.basename(paths.brokerLaunchLockFile);
   const config = path.basename(paths.configFile);
+  const broker = path.basename(paths.brokerFile);
   const audit = path.basename(paths.auditFile);
   const alternatives = [
     `${escapePattern(lock)}\\.candidate\\.${UUID_PATTERN}`,
     `${escapePattern(lock)}\\.stale\\.${UUID_PATTERN}`,
     `${escapePattern(lock)}\\.reclaim\\.stale\\.${UUID_PATTERN}`,
+    `${escapePattern(launchLock)}\\.candidate\\.${UUID_PATTERN}`,
+    `${escapePattern(launchLock)}\\.stale\\.${UUID_PATTERN}`,
+    `${escapePattern(launchLock)}\\.reclaim\\.stale\\.${UUID_PATTERN}`,
     `\\.${escapePattern(config)}\\.[1-9]\\d*\\.${UUID_PATTERN}\\.tmp`,
+    `\\.${escapePattern(broker)}\\.[1-9]\\d*\\.${UUID_PATTERN}\\.tmp`,
     `${escapePattern(audit)}\\.[1-9]\\d*\\.${UUID_PATTERN}\\.tmp`,
   ];
   return new RegExp(`^(?:${alternatives.join("|")})$`, "iu").test(entry);

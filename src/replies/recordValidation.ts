@@ -1,10 +1,12 @@
-// Agent context note: Strictly validates persisted pending-send JSON, canonical previews/digests, and deterministic media paths. Tests: test/send-service.test.mjs. Reject any malformed or changed active record before it can reach transport; update this note after meaningful behavior changes.
+// Agent context note: Strictly validates persisted pending-send JSON, reviewed link cards, canonical digests, and deterministic media paths. Tests: test/send-service.test.mjs. Reject malformed or changed active payload/thumbnail data before transport; update this note after meaningful behavior changes.
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { SafeWhatsAppError } from "../errors.js";
 import type { OutboundMediaKind, OutboundMediaSnapshot } from "../media/types.js";
 import { approvalPreviewFor, digestSend } from "./digest.js";
 import type {
   PendingMediaPayload,
+  PendingLinkPreview,
   PendingPayload,
   PendingSendRecord,
   PendingSendState,
@@ -20,6 +22,7 @@ const TERMINAL_STATES = new Set<PendingSendState>([
 ]);
 const MEDIA_KINDS = new Set<OutboundMediaKind>(["image", "audio", "video", "document"]);
 const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+const MAX_LINK_THUMBNAIL_BYTES = 64 * 1024;
 
 export function validatePendingSendRecord(
   value: unknown,
@@ -71,13 +74,18 @@ export function assertPayloadIntegrity(
 function validatePayload(value: unknown, pendingId: string, pendingDirectory: string): PendingPayload {
   const valueObject = requireObject(value);
   if (valueObject.kind === "text") {
-    const payload = objectWithKeys(value, ["kind", "destination", "text", "replyToMessageId"]);
+    const payload = objectWithKeys(value, [
+      "kind", "destination", "text", "replyToMessageId", "linkPreview",
+    ]);
     const text = boundedString(payload.text, 4_096, false);
     const validated: PendingTextPayload = {
       kind: "text",
       destination: validateDestination(payload.destination),
       text,
       ...(validateReplyId(payload.replyToMessageId) ? { replyToMessageId: payload.replyToMessageId as string } : {}),
+      ...(payload.linkPreview !== undefined
+        ? { linkPreview: validateLinkPreview(payload.linkPreview) }
+        : {}),
     };
     return validated;
   }
@@ -96,6 +104,71 @@ function validatePayload(value: unknown, pendingId: string, pendingDirectory: st
     return validated;
   }
   return corrupt();
+}
+
+function validateLinkPreview(value: unknown): PendingLinkPreview | null {
+  if (value === null) return null;
+  const preview = objectWithKeys(value, [
+    "matchedText", "canonicalUrl", "title", "description",
+    "jpegThumbnailBase64", "thumbnailSha256",
+  ]);
+  const matchedText = boundedString(preview.matchedText, 4_096, false);
+  const canonicalUrl = boundedString(preview.canonicalUrl, 4_096, false);
+  assertCanonicalHttpUrl(canonicalUrl);
+  const title = boundedString(preview.title, 512, false);
+  const description = preview.description === undefined
+    ? undefined
+    : boundedString(preview.description, 2_048, false);
+  const hasThumbnail = preview.jpegThumbnailBase64 !== undefined;
+  const hasThumbnailHash = preview.thumbnailSha256 !== undefined;
+  if (hasThumbnail !== hasThumbnailHash) corrupt();
+
+  let jpegThumbnailBase64: string | undefined;
+  let thumbnailSha256: string | undefined;
+  if (hasThumbnail) {
+    jpegThumbnailBase64 = boundedString(
+      preview.jpegThumbnailBase64,
+      Math.ceil(MAX_LINK_THUMBNAIL_BYTES / 3) * 4,
+      false,
+    );
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(jpegThumbnailBase64)) {
+      corrupt();
+    }
+    const bytes = Buffer.from(jpegThumbnailBase64, "base64");
+    if (bytes.byteLength < 4 || bytes.byteLength > MAX_LINK_THUMBNAIL_BYTES ||
+        bytes[0] !== 0xff || bytes[1] !== 0xd8 ||
+        bytes[bytes.byteLength - 2] !== 0xff || bytes[bytes.byteLength - 1] !== 0xd9 ||
+        bytes.toString("base64") !== jpegThumbnailBase64) {
+      corrupt();
+    }
+    if (!isSha256(preview.thumbnailSha256) ||
+        createHash("sha256").update(bytes).digest("hex") !== preview.thumbnailSha256) {
+      corrupt();
+    }
+    thumbnailSha256 = preview.thumbnailSha256;
+  }
+  return {
+    matchedText,
+    canonicalUrl,
+    title,
+    ...(description !== undefined ? { description } : {}),
+    ...(jpegThumbnailBase64 !== undefined
+      ? { jpegThumbnailBase64, thumbnailSha256 }
+      : {}),
+  };
+}
+
+function assertCanonicalHttpUrl(value: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return corrupt();
+  }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username || parsed.password || parsed.href !== value) {
+    corrupt();
+  }
 }
 
 function validateDestination(value: unknown): ResolvedDestination {

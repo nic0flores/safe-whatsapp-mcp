@@ -125,6 +125,7 @@ process.stdout.write(
 async function copyNodeLicense(runtimeRoot) {
   const candidates = [
     path.resolve(path.dirname(process.execPath), "..", "LICENSE"),
+    path.resolve(path.dirname(process.execPath), "..", "NODE-LICENSE"),
     path.join(path.dirname(process.execPath), "LICENSE"),
   ];
   for (const candidate of candidates) {

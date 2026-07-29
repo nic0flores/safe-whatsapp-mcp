@@ -4,13 +4,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createWhatsAppMcpServer, MCP_SERVER_INSTRUCTIONS } from "../dist/mcp/server.js";
 import { expectedToolNames } from "../dist/mcp/tools.js";
 
-test("MCP exposes exactly eleven schema-backed tools with the intended risk annotations", async () => {
+test("MCP exposes exactly twelve schema-backed tools with the intended risk annotations", async () => {
   const { client, close } = await connectedClient(fakeServices());
   const response = await client.listTools();
   const tools = new Map(response.tools.map((tool) => [tool.name, tool]));
 
   assert.deepEqual([...tools.keys()].sort(), [...expectedToolNames()].sort());
-  assert.equal(tools.size, 11);
+  assert.equal(tools.size, 12);
   for (const tool of tools.values()) {
     assert.equal(tool.inputSchema.type, "object");
     assert.equal(tool.outputSchema.type, "object");
@@ -21,6 +21,11 @@ test("MCP exposes exactly eleven schema-backed tools with the intended risk anno
     openWorldHint: false,
   });
   assert.deepEqual(tools.get("prepare_whatsapp_text_send").annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: true,
+  });
+  assert.deepEqual(tools.get("open_whatsapp_send_review").annotations, {
     readOnlyHint: false,
     destructiveHint: false,
     openWorldHint: true,
@@ -77,6 +82,20 @@ test("tools return structured data and inline media content", async () => {
   });
   assert.equal(prepared.structuredContent.data.pendingId, "11111111-1111-4111-8111-111111111111");
   assert.equal(services.calls.prepareText, 1);
+
+  const review = await client.callTool({
+    name: "open_whatsapp_send_review",
+    arguments: { kind: "text", e164: "+12025550123", text: "hello" },
+  });
+  assert.deepEqual(review.structuredContent.data, {
+    reviewId: "22222222-2222-4222-8222-222222222222",
+    state: "awaiting_human",
+    expiresAt: "2026-01-01T00:10:00.000Z",
+    browserOpened: true,
+  });
+  assert.equal(JSON.stringify(review).includes("127.0.0.1"), false);
+  assert.equal(JSON.stringify(review).includes("action"), false);
+  assert.equal(services.calls.openReview, 1);
   await close();
 });
 
@@ -113,7 +132,7 @@ test("unknown resource-read failures are sanitized", async () => {
 });
 
 function fakeServices() {
-  const calls = { fetchOlderMessages: 0, prepareText: 0 };
+  const calls = { fetchOlderMessages: 0, prepareText: 0, openReview: 0 };
   return {
     calls,
     reader: {
@@ -162,6 +181,17 @@ function fakeServices() {
       async sendPrepared() { return { state: "sent", whatsappMessageId: "wa-1" }; },
       async discard() { return { discarded: true }; },
       async list() { return { sends: [] }; },
+    },
+    reviews: {
+      async open() {
+        calls.openReview += 1;
+        return {
+          reviewId: "22222222-2222-4222-8222-222222222222",
+          state: "awaiting_human",
+          expiresAt: "2026-01-01T00:10:00.000Z",
+          browserOpened: true,
+        };
+      },
     },
   };
 }

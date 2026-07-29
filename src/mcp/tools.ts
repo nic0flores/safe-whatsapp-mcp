@@ -1,4 +1,4 @@
-// Agent context note: Registers the exact eleven public WhatsApp MCP tools with schemas, risk annotations, and safe result shaping. Tests: test/mcp-tools.test.mjs. Preserve the staged-send boundary and treat all inbound content as untrusted data; update this note after meaningful behavior changes.
+// Agent context note: Registers the exact twelve public WhatsApp MCP tools, including a non-sending browser-review opener. Tests: test/mcp-tools.test.mjs. Preserve the legacy staged boundary, never return browser capabilities, and treat all inbound content as untrusted data.
 import * as z from "zod/v4";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -16,6 +16,7 @@ export const WHATSAPP_TOOL_NAMES = [
   "list_whatsapp_sends",
   "prepare_whatsapp_text_send",
   "prepare_whatsapp_media_send",
+  "open_whatsapp_send_review",
   "send_prepared_whatsapp_message",
   "discard_prepared_whatsapp_message",
 ] as const;
@@ -198,6 +199,25 @@ export function registerWhatsAppTools(server: McpServer, services: WhatsAppMcpSe
       annotations: prepareAnnotations,
     },
     (input) => invoke(() => services.sends.prepareMedia(input)),
+  );
+
+  server.registerTool(
+    "open_whatsapp_send_review",
+    {
+      title: "Open WhatsApp Send Review",
+      description: "Open a private local browser composer for one editable WhatsApp draft. This tool never sends; only the Send button in that page can publish the reviewed message.",
+      inputSchema: {
+        kind: z.enum(["text", "media"]),
+        ...destinationSchema,
+        text: z.string().min(1).max(4_096).optional(),
+        outboxPath: z.string().min(1).max(1_024).optional(),
+        caption: z.string().max(1_024).optional(),
+        replyToMessageId: z.string().min(1).max(512).optional(),
+      },
+      outputSchema,
+      annotations: prepareAnnotations,
+    },
+    (input) => invoke(() => services.reviews.open(input as Parameters<typeof services.reviews.open>[0])),
   );
 
   server.registerTool(

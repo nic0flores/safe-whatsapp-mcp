@@ -5,7 +5,7 @@
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](package.json)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)](#project-status)
 
-A local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets an agent read a personal WhatsApp linked device, prepare an exact reply, and send only after a separate confirmation-gated tool call.
+A local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that lets an agent read a personal WhatsApp linked device, draft a reply, and open an editable private review page where you decide whether to send it.
 
 It uses your personal WhatsApp linked-device session. It does not use Meta's WhatsApp Business Platform or Cloud API, and it does not require a business account.
 
@@ -14,13 +14,13 @@ It uses your personal WhatsApp linked-device session. It does not use Meta's Wha
 
 ## Project note
 
-Safe WhatsApp MCP was initially built for a personal [Bliss AI](https://www.meditatewithbliss.com/) workflow. Much of the implementation was AI-assisted, and it has not received an independent security audit. It was designed around a narrow, confirmation-gated workflow, but you should still review it before pairing a primary account or exposing sensitive conversations to an AI model.
+Safe WhatsApp MCP was initially built for a personal [Bliss AI](https://www.meditatewithbliss.com/) workflow. Much of the implementation was AI-assisted, and it has not received an independent security audit. It was designed around a narrow, human-reviewed workflow, but you should still review it before pairing a primary account or exposing sensitive conversations to an AI model.
 
 Issues, security-minded reviews, and small auditable improvements are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Project status
 
-Version `0.1.0` is an early public source preview. It is not published to npm and there are no signed GitHub release downloads yet. The supported public path today is to review the source and build a local standalone bundle for macOS or Linux.
+Version `0.2.0` is an early public source preview. It is not published to npm and there are no signed GitHub release downloads yet. The supported public path today is to review the source and build a local standalone bundle for macOS or Linux.
 
 ## Quick start
 
@@ -42,9 +42,9 @@ bundle="release/safewhatsapp-v${version}-$(node -p 'process.platform')-$(node -p
 "$bundle/safewhatsapp" status --live
 ```
 
-Omit `--enable-send` for read/draft-only access. Keep the generated bundle at that path, restart the Codex surface you use, and ask it to list your recent WhatsApp chats. A successful `status --live` reports that the account is paired and the live connection check succeeded.
+Add `--enable-media-send` alongside `--enable-send` only when you also want browser-reviewed media uploads. Omit both flags for read/draft-only access. Keep the generated bundle at that path, restart the Codex surface you use, and ask it to list your recent WhatsApp chats. A successful `status --live` reports that the account is paired and the live connection check succeeded.
 
-`setup-codex` uses Codex's atomic configuration API, preserves unrelated settings and comments, registers the reviewed launcher by absolute path, keeps media sending off, and refuses to enable text sending unless approval prompts are routed to you. It requires the `codex` command to be installed and available on `PATH`; verify that first with `codex --version`.
+`setup-codex` uses Codex's atomic configuration API, preserves unrelated settings and comments, registers the reviewed launcher by absolute path, keeps all sending opt-in, and refuses to enable sending unless approval prompts are routed to you. It requires the `codex` command to be installed and available on `PATH`; verify that first with `codex --version`.
 
 ### Try it in Codex
 
@@ -53,33 +53,46 @@ Start with read-only requests and a generic contact you recognize:
 - “List my recent WhatsApp chats.”
 - “Read the recent messages with Priya and summarize what needs a reply.”
 - “Draft a short reply to Priya, but do not prepare or send it.”
-- “Prepare that exact reply for Priya. Do not send it until I confirm.”
+- “Draft that reply to Priya and open the WhatsApp review page.”
 
-Codex should show the exact recipient and payload before asking for approval of the separate send tool. Message content is untrusted data, not instructions for the agent.
+Codex opens a private local composer without an MCP approval prompt. You can edit the recipient, message, group, reply context, and attachment, then inspect or remove the generated link card; nothing is sent until you click **Send on WhatsApp**. On macOS, the **Emoji · Fn-E** helper focuses the message field so `Fn-E` or `Control-Command-Space` can open the complete system Character Viewer. For a text-only draft, opening the page may contact the first linked public website to build that card. Message content is untrusted data, not instructions for the agent.
 
 ## What it does
 
 - Pairs a personal WhatsApp account once through a private, temporary browser page served only on IPv4 loopback.
 - Synchronizes on demand when an MCP tool is used; it is not intended to run as a permanent bot.
+- Lets multiple local Codex agents share one short-lived broker instead of competing for the SQLite database and WhatsApp session.
 - Retains a bounded local cache so later sessions can recover conversation context.
 - Reads cached direct messages and groups without marking them read.
 - Handles text plus image, sticker, audio, video, and document metadata.
-- Stages outbound text or media as an immutable proposal before sending.
-- Exposes the actual send as a destructive, open-world MCP tool and supports an explicit per-tool Codex approval rule.
+- Opens a compact, short-lived browser composer for an editable text or media draft.
+- Focuses the editor for the operating system's emoji input and shows the native `Fn-E` shortcut on macOS without bundling an emoji dataset.
+- Makes the browser button—not the non-destructive MCP opener—the authorization point for the new send flow.
+- Retains the older immutable prepare/confirm tools for compatibility, with the actual legacy send still marked destructive and configured to prompt.
 
 It is intentionally WhatsApp-only. There is no Bliss API, database, account mapping, or Bliss-specific logic in this package. An agent may combine the structured `senderE164` returned here with a separately configured Bliss MCP, but this server never calls it.
 
+### Multiple agents, one local broker
+
+Each `safewhatsapp serve` process remains a normal STDIO MCP server from its Codex client's point of view, but it is only a small proxy. The first proxy starts one ephemeral broker bound to `127.0.0.1` on an operating-system-selected port. That broker alone owns the state lock, SQLite connection, and WhatsApp session; every attached proxy receives its own MCP connection to the shared services.
+
+The loopback connection is authenticated with a short-lived local capability recorded in private `broker.json`. This file is requested as mode `0600` where supported and contains broker coordination data, not WhatsApp credentials or the credential-vault master key. A proxy must match the broker's exact package version, configuration, and text/media send policy before it is admitted. If you change settings, send gates, or the installed bundle while another client is open, close and restart all Codex clients using Safe WhatsApp.
+
+The broker exists only while MCP clients or browser reviews are active and exits after the last one leaves or closes. Its shared WhatsApp socket still connects only when a tool needs it, closes after the configured inactivity timeout (60 seconds by default), and reconnects on demand. Pairing remains an explicit `safewhatsapp connect` operation; the broker cannot surface a QR through MCP. If `connect`, `disconnect`, or `purge` needs exclusive profile access while agents or reviews are active, the command authenticates an internal handoff request, cancels unsent reviews, lets in-flight work drain, and then takes the state lock. That maintenance handoff closes attached Safe WhatsApp MCP connections without logging out; clients can reconnect after the command finishes.
+
+`safewhatsapp status` is non-disruptive: it attaches to an existing broker for the status read regardless of that broker's send-policy setting. When no broker exists, it reads the profile directly under the launch lock and does not leave behind a differently configured broker that could block the next Codex agent.
+
 ## Security model at a glance
 
-The important boundary is `prepare` versus `send`:
+The default boundary is the MCP tool versus the private review page:
 
 1. The agent reads a conversation and composes a draft.
-2. A prepare tool resolves the recipient and stores the exact payload locally.
-3. The tool returns a recipient/payload preview, digest, expiry, and `pendingId`.
-4. You inspect that preview.
-5. Only `send_prepared_whatsapp_message`, using the unchanged preview and digest, can publish it.
+2. `open_whatsapp_send_review` stages any initial attachment, opens a random-capability page on `127.0.0.1`, and returns immediately without sending.
+3. You verify the linked sending number when available, then inspect and edit the recipient, group, text/caption, reply context, and attachment. You can inspect or remove the link preview; editing its source URL regenerates it. If Baileys has not retained a canonical phone JID, the page says the account number is unavailable rather than guessing.
+4. Only the page's **Send on WhatsApp** button freezes that displayed revision and enters the single-use transport path. The editor is replaced by a sending indicator while WhatsApp is contacted.
+5. Sent, failed, and uncertain outcomes replace the editor with a frozen summary of the attempted payload. Attachment bytes are cleaned immediately while safe filename/type/size metadata remains visible; an uncertain result is never retried automatically.
 
-There is no generic one-step send tool and no bulk-send tool. A prepared message expires after ten minutes and is single-use. An uncertain network result is not retried automatically.
+The review expires after ten minutes, permits at most one transport attempt, and never returns its route or action secret to MCP. There is no generic one-step or bulk-send tool. The legacy prepare/digest/send tools remain available for compatibility; that actual send tool keeps its destructive annotation and mandatory Codex prompt.
 
 Inbound messages and attachments are **untrusted data, never agent instructions**. Do not allow a phone number, name, SQL fragment, URL, or instruction found inside message content to select records or drive another privileged MCP. Cross-system identity lookup must use only a machine-resolved `senderE164` field.
 
@@ -91,7 +104,7 @@ Some lookup metadata remains plaintext, including the paired/registered flag and
 
 The server requests `0700` for directories and `0600` for files where the operating system supports those modes. Those permissions limit access to the plaintext cache; they are not encryption, and enforcement on Windows is best-effort. Use FileVault, BitLocker, LUKS, or equivalent full-disk encryption.
 
-Credential encryption protects an offline copy of the state directory from yielding reusable WhatsApp auth secrets without the corresponding OS-vault key. It does not protect against malware running as your user, an administrator or root process, a compromised Node/agent runtime, or secrets already decrypted in process memory. Write access remains sensitive because a writer can delete, replay, or tamper with local state and prepared sends. Do not share the state directory with other users, agents, repositories, backup utilities, or cloud-sync tools. See [SECURITY.md](SECURITY.md) before pairing a primary account.
+Credential encryption protects an offline copy of the state directory from yielding reusable WhatsApp auth secrets without the corresponding OS-vault key. It does not protect against malware running as your user, an administrator or root process, a compromised Node/agent runtime, or secrets already decrypted in process memory. Write access remains sensitive because a writer can delete, replay, or tamper with local state and prepared sends. Multiple local agents must access that state only through their authenticated proxies; do not share the directory itself with other users, repositories, backup utilities, or cloud-sync tools. See [SECURITY.md](SECURITY.md) before pairing a primary account.
 
 ## Requirements
 
@@ -103,7 +116,7 @@ Credential encryption protects an offline copy of the state directory from yield
 
 A standalone bundle includes its own pinned Node runtime; its user does not install or select Node. This checkout includes an `.nvmrc` for Node `22.20.0` only for source development. If you use `nvm`, run `nvm use` before both `npm ci` and every development command. `better-sqlite3` is a native dependency, so a source install made with one Node major version can fail under another.
 
-[Baileys](https://github.com/WhiskeySockets/Baileys) is currently pinned to the `7.0.0-rc13` release candidate. Its protocol surface and maintenance status can change; upgrade it only after auth-state, history, identity, group, retry, and send tests pass.
+[Baileys](https://github.com/WhiskeySockets/Baileys) is currently pinned to the `7.0.0-rc14` release candidate. Its protocol surface and maintenance status can change; upgrade it only after auth-state, history, identity, group, retry, browser-review, and send tests pass.
 
 ## Development setup
 
@@ -131,7 +144,7 @@ This creates `release/safewhatsapp-v<version>-<os>-<arch>/` plus a compressed ar
 To install a reviewed archive without Node or npm, extract its whole directory to a stable location and link only its launcher onto `PATH`. For example, set `bundle_name` to the archive name for your version and target:
 
 ```bash
-bundle_name=safewhatsapp-v0.1.0-darwin-arm64
+bundle_name=safewhatsapp-v0.2.0-darwin-arm64
 mkdir -p "$HOME/.local/lib/safewhatsapp" "$HOME/.local/bin"
 tar -xzf "release/$bundle_name.tar.gz" -C "$HOME/.local/lib/safewhatsapp"
 ln -sfn "$HOME/.local/lib/safewhatsapp/$bundle_name/safewhatsapp" "$HOME/.local/bin/safewhatsapp"
@@ -160,6 +173,7 @@ safewhatsapp status
 safewhatsapp status --live
 safewhatsapp setup-codex
 safewhatsapp setup-codex --enable-send
+safewhatsapp setup-codex --enable-send --enable-media-send
 safewhatsapp serve
 safewhatsapp disconnect
 safewhatsapp purge --yes
@@ -167,12 +181,15 @@ safewhatsapp purge --yes --abandon-key # recovery only; see below
 ```
 
 - `status` reads local state only; `status --live` performs a bounded connection check. Status reports credential encryption and plaintext cache storage separately as `credentialsAtRest` and `messageCacheAtRest`.
-- `setup-codex` registers read/draft access in the user Codex configuration. `--enable-send` explicitly enables text sends while retaining the mandatory per-tool human approval; media sending remains disabled.
+- `setup-codex` registers read/draft access in the user Codex configuration. `--enable-send` explicitly enables text sends, while adding `--enable-media-send` explicitly enables media sends too. The browser opener is auto-approved because it cannot itself send; the retained legacy send tool still prompts every time.
+- `serve` runs a per-client STDIO proxy. It discovers or starts the single authenticated local broker that owns the database and on-demand WhatsApp session; it does not create another database writer or another WhatsApp connection.
 - `disconnect` immediately sends a remote logout request when a paired local credential exists, then clears all local account-bound state and requests deletion of that profile's OS credential-vault key while preserving configuration and `outbox/`. Baileys does not provide a server acknowledgement for that request. If the remote request fails after credentials are loaded, local cleanup still completes and the command reports the failure. `unlink` remains an undocumented compatibility alias.
 - `purge --yes` is **local-only**. It removes the encrypted credentials, requests deletion of their OS credential-vault key, and clears cache, downloaded inbound media, pending sends, audit data, and configuration while preserving `outbox/`; it does not log out WhatsApp. Run `disconnect` first when possible, or remove the device in WhatsApp's Linked Devices screen.
 - If key deletion cannot be confirmed, normal purge retains the non-secret vault descriptor so cleanup can be retried. After the encrypted auth rows have been removed from the active state directory, `purge --yes --abandon-key` is the explicit recovery path: it discards that descriptor and permits re-pairing even if an orphaned wrapping key may remain in the OS credential store.
 
 Credential-vault deletion is best effort because the native binding can suppress some operating-system errors. Use `--abandon-key` only after `credential_cleanup_incomplete` and only after removing retained copies of the matching state. Destructive cleanup also requires this package's private ownership marker, so it fails closed for an arbitrary directory. See [SECURITY.md](SECURITY.md#account-lifecycle-and-destructive-cleanup) for the complete cleanup and recovery model.
+
+Commands that directly open or mutate the profile, including `connect`, `disconnect`, and `purge`, require exclusive ownership. Close every Codex client using Safe WhatsApp before running them if the CLI reports that the shared broker is active.
 
 ### Optional local settings
 
@@ -191,6 +208,8 @@ Defaults can be lowered or raised within hard safety ceilings in `~/.safe-whatsa
 
 `connectionTimeoutSeconds` applies to ordinary linked-device reconnects. Interactive QR pairing uses a separate five-minute connection window and a two-minute recent-history window.
 
+All proxies sharing a broker must use the exact same settings and `SAFE_WHATSAPP_MCP_ENABLE_SEND` / `SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND` values. A mismatch fails closed instead of inheriting another client's permissions. Close and restart all Safe WhatsApp Codex clients after changing the configuration, either send gate, or the installed version.
+
 Tests or isolated local profiles may set `SAFE_WHATSAPP_MCP_STATE_DIR` to an absolute state-directory path. Do not point it at a repository, shared folder, cloud-synchronized directory, or a directory containing unrelated files.
 
 ## Configure Codex
@@ -199,16 +218,18 @@ Use the reviewed standalone installation to configure Codex automatically:
 
 ```bash
 safewhatsapp setup-codex                 # read and draft; sending off
-safewhatsapp setup-codex --enable-send   # confirmation-gated text sending
+safewhatsapp setup-codex --enable-send   # browser-reviewed text sending
+safewhatsapp setup-codex --enable-send --enable-media-send
+                                         # browser-reviewed text and media sending
 ```
 
 This updates only `mcp_servers.safe_whatsapp` through Codex's atomic configuration API. It does not change the user's global model, sandbox, approval policy, or approval reviewer. A same-name server with a different command is treated as a conflict instead of being overwritten. Existing stricter server approval settings, disabled state, and tool deny list are preserved. Run the command again after installing a newer standalone bundle so Codex follows the new verified launcher.
 
 If an existing Safe WhatsApp entry is disabled, setup leaves it disabled and says so. Enable that entry in Codex before restarting if you want its tools loaded.
 
-`--enable-send` fails if effective Codex settings use `approval_policy = "never"` or route approvals to an automated reviewer. Project, profile, session, or managed configuration can still override the user configuration; review those layers if Codex reports the server as overridden.
+`--enable-media-send` is accepted only together with `--enable-send`. Either sending mode fails if effective Codex settings use `approval_policy = "never"` or route approvals to an automated reviewer. Project, profile, session, or managed configuration can still override the user configuration; review those layers if Codex reports the server as overridden.
 
-Restart the Codex surface you use after setup. The ChatGPT desktop app, Codex CLI, and IDE extension on the same host share the MCP configuration.
+Restart the Codex surface you use after setup. The ChatGPT desktop app, Codex CLI, and IDE extension on the same host share the MCP configuration, and concurrently open agents safely converge on the same ephemeral local broker.
 
 For manual review or another machine, [examples/codex-config.toml](examples/codex-config.toml) shows the generated server policy. Replace its launcher placeholder with the absolute path to a reviewed standalone `safewhatsapp`; never configure Codex against `node`, `npx`, a checkout's `dist/cli.js`, or a launcher copied without its adjacent bundle.
 
@@ -229,13 +250,16 @@ default_tools_approval_mode = "writes"
 SAFE_WHATSAPP_MCP_ENABLE_SEND = "false"
 SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND = "false"
 
+[mcp_servers.safe_whatsapp.tools.open_whatsapp_send_review]
+approval_mode = "approve"
+
 [mcp_servers.safe_whatsapp.tools.send_prepared_whatsapp_message]
 approval_mode = "prompt"
 ```
 
-`approval_policy = "on-request"` allows interactive MCP prompts, and `approvals_reviewer = "user"` prevents them from being delegated to an automatic reviewer. `default_tools_approval_mode = "writes"` prompts for tools that are not marked read-only, while the explicit per-tool rule forces a human prompt for the external send. The server also marks that tool destructive and open-world. Set the text-send environment gate to `true` only after these settings are effective. Do not weaken them for routine use.
+`open_whatsapp_send_review` is explicitly approved because it cannot publish a WhatsApp message. It does open a local page that may perform the bounded public-site preview fetch described below. The later browser click invokes an internal send operation that is not an MCP tool call. `approval_policy = "on-request"` and a user reviewer still protect the retained `send_prepared_whatsapp_message` compatibility path, whose explicit rule forces a prompt and whose annotations remain destructive and open-world. Never automate the external review page with a browser or desktop-control tool; a click is a human boundary only while the agent cannot control that browser.
 
-For another STDIO client, start from [examples/stdio-client.example.json](examples/stdio-client.example.json) and configure that client's equivalent of “always prompt before this tool.” If the client cannot enforce per-tool approval, leave sending disabled.
+For another STDIO client, start from [examples/stdio-client.example.json](examples/stdio-client.example.json). It may invoke the review opener without an extra prompt, but it must not receive or control the private browser capability. Configure its equivalent of “always prompt” for the legacy send tool; if it cannot enforce that rule, disable the legacy tool or leave sending disabled.
 
 ## Sending controls
 
@@ -246,11 +270,11 @@ Sending is off unless explicitly enabled in the MCP server environment:
 | `SAFE_WHATSAPP_MCP_ENABLE_SEND` | `false` | Allows prepared text sends and is also required for media sends. |
 | `SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND` | `false` | Additionally allows prepared media sends. |
 
-These flags are a deployment gate, not user confirmation. Every message still follows prepare → inspect → approved send.
+These flags are deployment kill switches, not approval for an individual message. The preferred flow is draft → private browser review → browser click → single-use send. The older prepare → exact preview → prompted legacy send flow remains supported.
 
-Direct destinations must be canonical `+E.164` numbers and are verified with WhatsApp. Groups must already exist and are addressed through their opaque chat IDs. There is deliberately no send allowlist in `0.1.0`: after staging and approval, a send can target any verified direct number or existing group. Broadcasts, channels, status, and arbitrary raw JIDs are rejected.
+Direct destinations must be canonical `+E.164` numbers and are verified with WhatsApp. The review page offers only locally named, cached existing groups through review-scoped opaque choices; every displayed group name includes a stable masked identifier, and an unknown or unnamed requested group fails closed. The page never accepts an editable transport JID. There is deliberately no send allowlist in `0.2.0`: after browser review or legacy approval, a send can target any verified direct number or reviewable existing group. Broadcasts, channels, status, and arbitrary raw JIDs are rejected.
 
-The approval preview visibly escapes bidirectional and other invisible Unicode formatting controls. This makes recipient names and message text inspectable without changing the bytes that will actually be sent; the digest binds both the exact payload and that displayed preview.
+The legacy approval preview visibly escapes bidirectional and other invisible Unicode formatting controls. The browser composer separately warns when message text contains bidirectional controls and shows an exact escaped rendering; group and filename labels escape those controls too. This keeps the bytes that will actually be sent inspectable without silently changing them.
 
 For outbound media, first place the file in:
 
@@ -258,7 +282,9 @@ For outbound media, first place the file in:
 ~/.safe-whatsapp-mcp/outbox/
 ```
 
-The media prepare tool accepts only a relative path beneath that directory. Absolute paths, traversal, symlink escapes, non-regular files, and files over the configured limit (hard maximum 25 MiB) are rejected. Preparation snapshots the exact bytes into private pending storage and binds their hash and metadata into the digest. The server cannot send an arbitrary workspace or home-directory file. Images, video, audio, and documents are supported; audio captions are rejected because WhatsApp's audio payload does not carry them.
+The media prepare and review tools initially accept only a relative path beneath that directory. Absolute paths, traversal, symlink escapes, non-regular files, and files over the configured limit (hard maximum 25 MiB) are rejected. The review page can replace that attachment only through its explicit file picker and bounded upload; it never accepts another filesystem path. Exact bytes are snapshotted into private pending storage and bound by hash. Each displayed attachment also has a random review revision that the browser must return on Send, so a stale duplicate tab cannot authorize different media. Images, video, audio, and documents are supported; audio captions are rejected because WhatsApp's audio payload does not carry them.
+
+For a text-only draft, the page automatically loads a card for the first HTTP(S) or `www.` link. This contacts the linked site from your computer, so it may see your public IP address. The card can be removed without changing the message, and no preview is loaded while a file is attached. Fetching is bounded to public addresses on ports 80/443, revalidates DNS and redirects, sends no cookies/auth/referrer, caps downloaded data, and converts accepted artwork to a small local JPEG. Editing the URL invalidates the card. The reviewed card—or an explicit `null`—is passed to Baileys so it cannot fetch a different preview during transport.
 
 ## MCP tools
 
@@ -273,10 +299,11 @@ The media prepare tool accepts only a relative path beneath that directory. Abso
 | `list_whatsapp_sends` | Inspect staged and historical send records | No |
 | `prepare_whatsapp_text_send` | Stage an exact text payload | No; writes local state |
 | `prepare_whatsapp_media_send` | Snapshot and stage outbox media | No; writes local state |
+| `open_whatsapp_send_review` | Open an editable, private browser composer | May fetch the first linked public website for a preview; only the later browser button can send to WhatsApp |
 | `send_prepared_whatsapp_message` | Send one immutable staged payload | **Yes; always approve** |
 | `discard_prepared_whatsapp_message` | Remove one unsent staged payload | No; writes local state |
 
-All cached direct and group conversations are readable. `0.1.0` has no read allowlist. Keep this in mind before giving an agent other privileged tools in the same conversation.
+All cached direct and group conversations are readable. `0.2.0` has no read allowlist. Keep this in mind before giving an agent other privileged tools in the same conversation.
 
 `fetch_older_whatsapp_messages` makes one bounded request for at most 50 messages. It never follows the history automatically; each additional batch requires another explicit tool call. Current Baileys companion-device behavior is best effort: WhatsApp may accept a request without delivering the history response before the bounded wait ends. In that case the tool reports `pending` rather than claiming that the chat has no older history.
 
@@ -298,7 +325,8 @@ Fetched messages pass through the same deletion, expiry, view-once, and deduplic
 - A media message is reauthorized after download/cache awaits and again when an opaque resource is read, so a concurrent revocation or expiry invalidates its cache instead of returning stale bytes.
 - Downloaded attachment bytes are reconciled to retained message IDs, so expiry, deletion, and the seven-day/200-message limits also remove their cache.
 - A new pairing cannot inherit an old account's cache or staged sends: an unpaired profile is cleared before fresh in-memory auth state is created.
-- The socket closes after 60 seconds of inactivity and reconnects on demand.
+- The shared WhatsApp socket closes after 60 seconds of inactivity and reconnects on demand; closing one agent does not interrupt another attached agent.
+- An open review keeps the broker alive after its initiating MCP client disconnects. It expires after ten minutes; terminal state remains briefly visible, then its capability and temporary media are removed.
 - The server does not send presence, typing, or read receipts, and does not archive, mute, or otherwise mutate chats.
 - Persistent database-backed WhatsApp message retry lookup is disabled, preventing reconnect-time relay of unrelated `fromMe` messages outside this package's staged-send path.
 - Group sends do not reuse persisted participant metadata; Baileys fetches current group metadata before constructing a send.
@@ -309,7 +337,7 @@ WhatsApp content is end-to-end encrypted in transit to the linked-device endpoin
 
 ## Scope exclusions
 
-`0.1.0` does not support group administration, broadcasts, channels, status, reactions, outbound edit/delete, calls, location, contacts, polls, view-once sending, auto-replies, scheduled sends, or bulk sends.
+`0.2.0` does not support group administration, broadcasts, channels, status, reactions, outbound edit/delete, calls, location, contacts, polls, view-once sending, auto-replies, scheduled sends, or bulk sends.
 
 ## Development
 

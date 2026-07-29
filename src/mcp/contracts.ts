@@ -1,6 +1,7 @@
-// Agent context note: Defines the narrow read/history/media/send capabilities consumed by the MCP registry. Tests: test/mcp-tools.test.mjs. Keep the MCP layer independent from Baileys and concrete persistence; update this note after meaningful behavior changes.
+// Agent context note: Defines the narrow read/history/media/send/review capabilities consumed by the MCP registry. Tests: test/mcp-tools.test.mjs. Keep the MCP layer independent from Baileys and concrete persistence; update this note after meaningful behavior changes.
 import type { InboundMediaReader } from "../media/inboundMedia.js";
 import type { WhatsAppSendOperations } from "../replies/sendService.js";
+import type { WhatsAppReviewOperations } from "../review/types.js";
 
 export interface WhatsAppReadOperations {
   getStatus(): Promise<Record<string, unknown>>;
@@ -32,4 +33,5 @@ export interface WhatsAppMcpServices {
   reader: WhatsAppReadOperations;
   media: InboundMediaReader;
   sends: WhatsAppSendOperations;
+  reviews: WhatsAppReviewOperations;
 }
