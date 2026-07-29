@@ -66,7 +66,7 @@ test("CLI exposes help/version and has an executable generated shebang", async (
     await assert.rejects(
       execFile(process.execPath, [cli, "setup-codex", ...flags], { env: sourceEnvironment }),
       (error) => {
-        assert.match(error.stderr, /standalone_install_required/u);
+        assert.match(error.stderr, /installed_package_required/u);
         assert.doesNotMatch(error.stderr, /invalid_arguments/u);
         return true;
       },
@@ -89,16 +89,15 @@ test("disconnect runs directly without an interactive confirmation", async () =>
   }
 });
 
-test("Codex setup refuses a source checkout instead of registering node or dist", async () => {
+test("Codex setup refuses a source checkout instead of registering mutable source", async () => {
   const env = { ...process.env };
   delete env.SAFE_WHATSAPP_MCP_STANDALONE_EXECUTABLE;
   delete env.SAFE_WHATSAPP_MCP_STANDALONE_BUNDLE;
   await assert.rejects(
     execFile(process.execPath, [cli, "setup-codex"], { env }),
     (error) => {
-      assert.match(error.stderr, /reviewed standalone Safe WhatsApp installation/u);
-      assert.match(error.stderr, /standalone_install_required/u);
-      assert.equal(error.stderr.includes("dist/cli.js"), false);
+      assert.match(error.stderr, /installed from npm or as a reviewed standalone bundle/u);
+      assert.match(error.stderr, /installed_package_required/u);
       return true;
     },
   );

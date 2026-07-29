@@ -13,7 +13,10 @@
     "SECURITY.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
-    "examples"
+    "npm-shrinkwrap.json",
+    "examples/codex-config.toml",
+    "examples/config.example.json",
+    "examples/stdio-client.example.json"
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/add-cli-shebang.mjs",
@@ -25,6 +28,8 @@
     "pack:dry-run": "npm pack --dry-run",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "smoke:standalone": "node scripts/smoke-standalone.mjs",
+    "verify:release": "npm run typecheck && npm test && npm run audit:prod && npm run smoke:pack",
+    "prepublishOnly": "npm run typecheck && npm test",
     "prepack": "npm run build"
   },
   "keywords": [
@@ -52,7 +57,7 @@
   },
   "homepage": "https://github.com/dhruvratra/safe-whatsapp-mcp#readme",
   "engines": {
-    "node": ">=22.0.0"
+    "node": "22.x || 24.x"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

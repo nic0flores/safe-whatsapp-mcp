@@ -2,11 +2,12 @@
 
 All notable changes to this project will be documented here. The project follows [Semantic Versioning](https://semver.org/).
 
-## 0.2.0 - Unreleased
+## 0.2.0 - 2026-07-29
 
 ### Added
 
 - `open_whatsapp_send_review`, a non-sending MCP tool that opens a private editable browser composer for direct numbers or cached groups.
+- Supported global npm onboarding through the canonical `safewhatsapp` CLI on macOS and Linux, with `setup-codex` pinning absolute Node and installed CLI paths and safely repairing its own stale path entry.
 - Browser-side recipient, text/caption, reply-context, and attachment editing plus automatic link-card inspection/removal with a Bliss-inspired responsive interface.
 - A compact three-state review surface: editable draft, accessible sending loader, and an exact post-send receipt that retains only safe display metadata after attachment cleanup.
 - A dependency-free emoji focus helper that exposes the native `Fn-E` shortcut on macOS instead of bundling a partial emoji set.
@@ -18,6 +19,7 @@ All notable changes to this project will be documented here. The project follows
 ### Changed
 
 - Codex setup auto-approves only the non-destructive review opener; the retained `send_prepared_whatsapp_message` compatibility tool still prompts every time.
+- Codex setup accepts either a verified npm installation or reviewed standalone bundle; npm users rerun setup after package or Node-path upgrades.
 - Reviewed sends freeze the browser-edited revision into the existing immutable, serialized, single-use transport path and explicitly pass the reviewed link card or disable Baileys preview fetching.
 - Package and broker protocol compatibility version is now `0.2.0` so older brokers cannot expose a mismatched tool surface.
 

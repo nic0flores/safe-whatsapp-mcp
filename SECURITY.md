@@ -8,7 +8,7 @@ Safe WhatsApp MCP was initially built for a personal [Bliss AI](https://www.medi
 
 ## Supported versions
 
-Version `0.2.0` is an early public source preview. It is not published to npm and there are no signed release downloads. Until the first tagged release, security fixes apply to the current `main` branch only. After tagged releases begin, fixes will target the latest published minor version.
+Version `0.2.0` is the current supported release and introduces the global npm onboarding path. Security fixes target the current `0.2.x` release and `main`. There are no signed standalone release downloads yet.
 
 ## Reporting vulnerabilities
 
@@ -61,7 +61,7 @@ Every `safewhatsapp serve` process is a per-client STDIO proxy. Proxies converge
 
 The private `broker.json` descriptor is requested as mode `0600` where supported. It contains bounded coordination metadata and a random, short-lived local IPC capability; it does **not** contain WhatsApp credentials, Signal keys, message content, or the credential-vault master key. Authentication proves possession of that capability before MCP bytes are accepted. The capability expires with the broker and the descriptor is removed when the broker stops.
 
-Admission fails closed unless a proxy matches the broker's exact package version, configuration fingerprint, and text/media send gates. This prevents a read-only client from silently inheriting a send-enabled broker. Close and restart all Safe WhatsApp Codex clients after changing the configuration, either send gate, or the installed bundle. Commands requiring exclusive profile access—`connect`, `disconnect`, and `purge`—use a separate capability-authenticated shutdown purpose. The broker rejects unauthenticated handoffs, stops accepting work, drains tracked operations, closes attached MCP connections, and releases SQLite before the command proceeds. This broker handoff never logs out WhatsApp; only the subsequent explicit `disconnect` operation does.
+Admission fails closed unless a proxy matches the broker's exact package version, configuration fingerprint, and text/media send gates. This prevents a read-only client from silently inheriting a send-enabled broker. Close and restart all Safe WhatsApp Codex clients after changing the configuration, either send gate, or the installed package/bundle. Commands requiring exclusive profile access—`connect`, `disconnect`, and `purge`—use a separate capability-authenticated shutdown purpose. The broker rejects unauthenticated handoffs, stops accepting work, drains tracked operations, closes attached MCP connections, and releases SQLite before the command proceeds. This broker handoff never logs out WhatsApp; only the subsequent explicit `disconnect` operation does.
 
 The local `status` command may authenticate using the running descriptor's policy so a terminal without Codex's send environment can inspect that broker. This reviewed path invokes only status and, with `--live`, the existing bounded synchronization read; it does not expose a policy-independent MCP connection to agents.
 
@@ -140,7 +140,8 @@ Inbound media persists only a bounded WhatsApp `directPath` and media key, never
 ## Operational guidance
 
 - Pair only from a trusted local terminal and the browser page it opens; a QR must never leave the machine.
-- Keep the private standalone Node runtime (or source-install Node.js) and reviewed pinned dependencies current.
+- An npm installation requires supported Node.js. On macOS and Linux, `setup-codex` checks the stable package layout and pins the absolute Node executable and installed CLI paths; in-place upgrades take effect automatically, while path changes require setup again. Reinstall after a Node-major change so native modules match. Windows Codex registration is currently manual.
+- A standalone bundle carries its own pinned Node runtime. Keep either runtime and the reviewed pinned dependencies current.
 - Do not expose the STDIO process as a network service.
 - Keep the broker bound to IPv4 loopback, preserve authenticated admission, and never place its capability in logs, stdout, arguments, or environment variables.
 - Keep stdout exclusively for MCP protocol messages; send sanitized diagnostics to stderr.

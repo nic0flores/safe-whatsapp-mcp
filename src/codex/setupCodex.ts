@@ -1,10 +1,12 @@
-// Agent context note: Safely registers or upgrades a recognized standalone launcher in Codex through its atomic config API. Tests: test/codex-setup.test.mjs. Auto-approve only the non-sending browser opener, preserve the legacy send prompt and unrelated stricter settings, and keep text/media gates explicit.
+// Agent context note: Safely registers or upgrades a verified standalone or npm-installed launch in Codex through its atomic config API. Tests: test/codex-setup.test.mjs and package smokes. Auto-approve only the non-sending browser opener, preserve the legacy send prompt and unrelated stricter settings, and keep text/media gates explicit.
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {
+  CODEX_SETUP_MARKER_ENV,
+  CODEX_SETUP_MARKER_VALUE,
   MEDIA_SEND_ENABLED_ENV,
   SEND_ENABLED_ENV,
 } from "../constants.js";
@@ -16,8 +18,10 @@ import {
   type ConfigBatchWriteParams,
 } from "./appServerConfig.js";
 import {
+  isRecognizedNpmMcpLaunch,
   isRecognizedStandaloneExecutable,
-  resolveStandaloneExecutable,
+  resolveInstalledMcpLaunch,
+  type McpLaunch,
 } from "./selfExecutable.js";
 
 const SERVER_NAME = "safe_whatsapp";
@@ -49,6 +53,8 @@ export interface SetupCodexOptions {
   enableMediaSend?: boolean;
   environment?: NodeJS.ProcessEnv;
   executable?: string;
+  /** Test/integration seam; the CLI always resolves and verifies its own installed launch. */
+  launch?: McpLaunch;
   createClient?: (codexHome: string, environment: NodeJS.ProcessEnv) => Promise<ConfigClient>;
 }
 
@@ -61,6 +67,12 @@ export interface SetupCodexResult {
 }
 
 export async function setupCodex(options: SetupCodexOptions = {}): Promise<SetupCodexResult> {
+  if (process.platform === "win32") {
+    throw new SafeWhatsAppError(
+      "Automatic Codex setup is currently supported on macOS and Linux. Configure the STDIO server manually on Windows.",
+      "unsupported_platform",
+    );
+  }
   const enableSend = options.enableSend === true;
   const enableMediaSend = options.enableMediaSend === true;
   if (enableMediaSend && !enableSend) {
@@ -70,16 +82,11 @@ export async function setupCodex(options: SetupCodexOptions = {}): Promise<Setup
     );
   }
   const environment = options.environment ?? process.env;
-  const suppliedExecutable = options.executable ?? await resolveStandaloneExecutable({ environment });
-  let executable: string;
-  try {
-    executable = await fs.realpath(suppliedExecutable);
-  } catch {
-    throw new SafeWhatsAppError(
-      "Safe WhatsApp could not verify its installed launcher.",
-      "unsafe_standalone_install",
-    );
-  }
+  const launch = options.launch
+    ? await resolveSuppliedLaunch(options.launch)
+    : options.executable
+    ? { command: await resolveExecutable(options.executable), args: ["serve"] }
+    : await resolveInstalledMcpLaunch({ environment });
   const codexHome = await prepareCodexHome(environment);
   const configPath = path.join(codexHome, "config.toml");
   await assertSafeConfig(configPath);
@@ -95,19 +102,19 @@ export async function setupCodex(options: SetupCodexOptions = {}): Promise<Setup
       const current = serverAt(initial.user.config);
       const effective = serverAt(initial.effective);
       if (!current && effective) throw registrationConflict();
-      if (current) await assertCompatibleServer(current, executable);
+      if (current) await assertCompatibleServer(current, launch);
       if (enableSend) assertHumanApproval(initial.effective);
 
       const desired = desiredServer(
         current,
-        executable,
+        launch,
         { enableSend, enableMediaSend },
       );
       if (current && containsValue(current, desired) && effective && activeServerMatches(effective, desired)) {
         return result(false, configPath, desired);
       }
 
-      if (current) await assertCompatibleServer(current, executable);
+      if (current) await assertCompatibleServer(current, launch);
       await assertFingerprint(configPath, fingerprint);
       let writeResult: unknown;
       try {
@@ -154,7 +161,7 @@ export async function setupCodex(options: SetupCodexOptions = {}): Promise<Setup
 
 function desiredServer(
   current: Record<string, unknown> | undefined,
-  executable: string,
+  launch: McpLaunch,
   sendPolicy: { enableSend: boolean; enableMediaSend: boolean },
 ): Record<string, unknown> {
   const enabled = current?.enabled === false ? false : true;
@@ -162,8 +169,8 @@ function desiredServer(
     ? "prompt"
     : "writes";
   return {
-    command: executable,
-    args: ["serve"],
+    command: launch.command,
+    args: [...launch.args],
     startup_timeout_sec: 20,
     tool_timeout_sec: 90,
     required: false,
@@ -171,6 +178,7 @@ function desiredServer(
     default_tools_approval_mode: defaultApproval,
     enabled_tools: [...WHATSAPP_TOOL_NAMES],
     env: {
+      [CODEX_SETUP_MARKER_ENV]: CODEX_SETUP_MARKER_VALUE,
       [SEND_ENABLED_ENV]: sendPolicy.enableSend ? "true" : "false",
       [MEDIA_SEND_ENABLED_ENV]: sendPolicy.enableMediaSend ? "true" : "false",
     },
@@ -183,13 +191,30 @@ function desiredServer(
 
 async function assertCompatibleServer(
   server: Record<string, unknown>,
-  executable: string,
+  desired: McpLaunch,
 ): Promise<void> {
   if (typeof server.command !== "string" || !path.isAbsolute(server.command) ||
-      !Array.isArray(server.args) || server.args.length !== 1 || server.args[0] !== "serve" ||
+      !Array.isArray(server.args) || server.args.some((value) => typeof value !== "string") ||
       server.url !== undefined || server.cwd !== undefined || server.env_vars !== undefined ||
       (server.experimental_environment !== undefined && server.experimental_environment !== "local")) {
     throw registrationConflict();
+  }
+  const currentArgs = server.args as string[];
+  const env = server.env;
+  if (env !== undefined) {
+    if (!isRecord(env)) throw registrationConflict();
+    const allowed = new Set([
+      CODEX_SETUP_MARKER_ENV,
+      SEND_ENABLED_ENV,
+      MEDIA_SEND_ENABLED_ENV,
+    ]);
+    if (Object.keys(env).some((key) => !allowed.has(key))) throw registrationConflict();
+  }
+  const setupOwned = isRecord(env) &&
+    env[CODEX_SETUP_MARKER_ENV] === CODEX_SETUP_MARKER_VALUE;
+  if (setupOwned && isGeneratedLaunchShape(server.command, currentArgs) &&
+      await hasMissingLaunchTarget(server.command, currentArgs)) {
+    return;
   }
   let currentRealPath: string;
   try {
@@ -197,16 +222,85 @@ async function assertCompatibleServer(
   } catch {
     throw registrationConflict();
   }
-  if (currentRealPath !== executable &&
-      !await isRecognizedStandaloneExecutable(currentRealPath)) {
+  const sameLaunch = currentRealPath === desired.command &&
+    await equivalentArgs(currentArgs, desired.args);
+  const recognizedStandalone = currentArgs.length === 1 && currentArgs[0] === "serve" &&
+    await isRecognizedStandaloneExecutable(currentRealPath);
+  if (!sameLaunch && !recognizedStandalone &&
+      !await isRecognizedNpmMcpLaunch(currentRealPath, currentArgs)) {
     throw registrationConflict();
   }
-  const env = server.env;
-  if (env !== undefined) {
-    if (!isRecord(env)) throw registrationConflict();
-    const allowed = new Set([SEND_ENABLED_ENV, MEDIA_SEND_ENABLED_ENV]);
-    if (Object.keys(env).some((key) => !allowed.has(key))) throw registrationConflict();
+}
+
+function isGeneratedLaunchShape(command: string, args: string[]): boolean {
+  if (args.length === 1 && args[0] === "serve") {
+    return ["safewhatsapp", "safewhatsapp.exe"].includes(path.basename(command).toLowerCase());
   }
+  if (args.length !== 2 || args[1] !== "serve" || !path.isAbsolute(args[0]) ||
+      !["node", "node.exe"].includes(path.basename(command).toLowerCase())) return false;
+  const cli = path.resolve(args[0]);
+  const packageRoot = path.resolve(path.dirname(cli), "..");
+  return cli === path.join(packageRoot, "dist", "cli.js") &&
+    path.basename(packageRoot) === "safe-whatsapp-mcp" &&
+    path.basename(path.dirname(packageRoot)) === "node_modules";
+}
+
+async function hasMissingLaunchTarget(command: string, args: string[]): Promise<boolean> {
+  const targets = args.length === 2 ? [command, args[0]] : [command];
+  for (const target of targets) {
+    try {
+      await fs.realpath(target);
+    } catch (error) {
+      if (isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) return true;
+      return false;
+    }
+  }
+  return false;
+}
+
+async function equivalentArgs(actual: string[], desired: string[]): Promise<boolean> {
+  if (actual.length !== desired.length) return false;
+  for (let index = 0; index < actual.length; index += 1) {
+    if (actual[index] === desired[index]) continue;
+    if (index !== 0 || !path.isAbsolute(actual[index]) || !path.isAbsolute(desired[index])) {
+      return false;
+    }
+    try {
+      if (await fs.realpath(actual[index]) !== await fs.realpath(desired[index])) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function resolveExecutable(value: string): Promise<string> {
+  try {
+    return await fs.realpath(value);
+  } catch {
+    throw new SafeWhatsAppError(
+      "Safe WhatsApp could not verify its installed launcher.",
+      "unsafe_standalone_install",
+    );
+  }
+}
+
+async function resolveSuppliedLaunch(value: McpLaunch): Promise<McpLaunch> {
+  if (!Array.isArray(value.args) || value.args.length < 1 || value.args.length > 2 ||
+      value.args.at(-1) !== "serve" ||
+      (value.args.length === 2 && !path.isAbsolute(value.args[0]))) {
+    throw new SafeWhatsAppError("Safe WhatsApp could not verify its installed launch.", "unsafe_install");
+  }
+  const command = await resolveExecutable(value.command);
+  const args = [...value.args];
+  if (args.length === 2) {
+    try {
+      args[0] = await fs.realpath(args[0]);
+    } catch {
+      throw new SafeWhatsAppError("Safe WhatsApp could not verify its installed launch.", "unsafe_install");
+    }
+  }
+  return { command, args };
 }
 
 function assertHumanApproval(config: Record<string, unknown>): void {

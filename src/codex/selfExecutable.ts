@@ -1,4 +1,4 @@
-// Agent context note: Proves Codex setup is running from the reviewed standalone bundle and recognizes older exact standalone layouts for safe config upgrades. Tests: test/codex-setup.test.mjs and scripts/smoke-standalone.mjs. Never run an old bundle or fall back to node, dist/cli.js, PATH lookup, or an unverified launcher; update this note after meaningful changes.
+// Agent context note: Resolves a stable MCP launch from either the reviewed standalone bundle or an actual npm installation, while rejecting source checkouts and npm links. Tests: test/codex-setup.test.mjs plus package/standalone smokes. Standalone uses its private runtime; npm setup pins the absolute runtime and installed CLI paths rather than relying on PATH.
 import { createHash } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
@@ -27,6 +27,11 @@ interface PackageRecord {
   bin?: unknown;
 }
 
+export interface McpLaunch {
+  command: string;
+  args: string[];
+}
+
 const RECOGNIZED_LAUNCHER_HASHES = new Set([
   "8c9f4809dfccc9065e18e387bf8fc746b80e4ddaa18125d432312cf33e1b4f3f",
 ]);
@@ -39,6 +44,50 @@ export interface StandaloneExecutableOptions {
   arch?: string;
   version?: string;
   uid?: number;
+}
+
+export async function resolveInstalledMcpLaunch(
+  options: StandaloneExecutableOptions = {},
+): Promise<McpLaunch> {
+  const environment = options.environment ?? process.env;
+  if (environment[STANDALONE_EXECUTABLE_ENV] !== undefined ||
+      environment[STANDALONE_BUNDLE_ENV] !== undefined) {
+    return {
+      command: await resolveStandaloneExecutable(options),
+      args: ["serve"],
+    };
+  }
+  return resolveNpmMcpLaunch(options);
+}
+
+export async function resolveNpmMcpLaunch(
+  options: StandaloneExecutableOptions = {},
+): Promise<McpLaunch> {
+  const modulePath = path.resolve(options.modulePath ?? fileURLToPath(import.meta.url));
+  const runtimePath = path.resolve(options.runtimePath ?? process.execPath);
+  let moduleRealPath: string;
+  let runtime: string;
+  try {
+    [moduleRealPath, runtime] = await Promise.all([
+      fs.realpath(modulePath),
+      fs.realpath(runtimePath),
+    ]);
+  } catch {
+    throw unsafeNpmInstall();
+  }
+
+  const packageRoot = path.resolve(path.dirname(moduleRealPath), "..", "..");
+  const expectedModule = path.join(packageRoot, "dist", "codex", "selfExecutable.js");
+  if (moduleRealPath !== expectedModule || !isNpmPackageRoot(packageRoot)) {
+    throw npmInstallRequired();
+  }
+
+  const cli = path.join(packageRoot, "dist", "cli.js");
+  await assertNpmPackage(packageRoot, cli, runtime, {
+    expectedVersion: options.version ?? VERSION,
+    uid: options.uid,
+  });
+  return { command: runtime, args: [cli, "serve"] };
 }
 
 export async function resolveStandaloneExecutable(
@@ -149,7 +198,7 @@ export async function isRecognizedStandaloneExecutable(
     if (!RECOGNIZED_LAUNCHER_HASHES.has(launcherHash)) return false;
     if (!hasExactKeys(record, ["arch", "name", "node", "platform", "version"])) return false;
     return record.name === "safewhatsapp" &&
-      typeof record.version === "string" && isOlderPackageVersion(record.version, VERSION) &&
+      typeof record.version === "string" && isCurrentOrOlderVersion(record.version, VERSION) &&
       record.platform === (options.platform ?? process.platform) &&
       record.arch === (options.arch ?? process.arch) &&
       typeof record.node === "string" && isSupportedNode(record.node) &&
@@ -158,6 +207,68 @@ export async function isRecognizedStandaloneExecutable(
       isRecord(packageRecord.bin) && packageRecord.bin.safewhatsapp === "dist/cli.js";
   } catch {
     return false;
+  }
+}
+
+export async function isRecognizedNpmMcpLaunch(
+  commandValue: string,
+  argsValue: string[],
+  options: Pick<StandaloneExecutableOptions, "uid"> = {},
+): Promise<boolean> {
+  try {
+    if (!path.isAbsolute(commandValue) || argsValue.length !== 2 ||
+        !path.isAbsolute(argsValue[0]) || argsValue[1] !== "serve") return false;
+    const [runtime, cli] = await Promise.all([
+      fs.realpath(path.resolve(commandValue)),
+      fs.realpath(path.resolve(argsValue[0])),
+    ]);
+    const packageRoot = path.resolve(path.dirname(cli), "..");
+    if (cli !== path.join(packageRoot, "dist", "cli.js") ||
+        !isNpmPackageRoot(packageRoot)) return false;
+    await assertNpmPackage(packageRoot, cli, runtime, { uid: options.uid });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function assertNpmPackage(
+  packageRoot: string,
+  cli: string,
+  runtime: string,
+  options: { expectedVersion?: string; uid?: number },
+): Promise<void> {
+  const packagePath = path.join(packageRoot, "package.json");
+  const selfPath = path.join(packageRoot, "dist", "codex", "selfExecutable.js");
+  const uid = options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+  await Promise.all([
+    assertSafeNpmPath(packageRoot, "directory", uid),
+    assertSafeNpmPath(path.join(packageRoot, "dist"), "directory", uid),
+    assertSafeNpmPath(path.join(packageRoot, "dist", "codex"), "directory", uid),
+    assertSafeNpmPath(packagePath, "file", uid),
+    assertSafeNpmPath(cli, "file", uid),
+    assertSafeNpmPath(selfPath, "file", uid),
+    assertSafeNpmPath(runtime, "executable", uid),
+  ]);
+  let record: PackageRecord;
+  let cliSource: Buffer;
+  try {
+    [record, cliSource] = await Promise.all([
+      readJsonRecord<PackageRecord>(packagePath),
+      readBounded(cli, 2 * 1024 * 1024),
+    ]);
+  } catch {
+    throw unsafeNpmInstall();
+  }
+  if (record.name !== PACKAGE_NAME || typeof record.version !== "string" ||
+      (options.expectedVersion !== undefined
+        ? record.version !== options.expectedVersion
+        : !isCurrentOrOlderVersion(record.version, VERSION)) ||
+      record.type !== "module" || !isRecord(record.bin) ||
+      record.bin.safewhatsapp !== "dist/cli.js" ||
+      !cliSource.subarray(0, 20).toString("utf8").startsWith("#!/usr/bin/env node\n") ||
+      !["node", "node.exe"].includes(path.basename(runtime).toLowerCase())) {
+    throw unsafeNpmInstall();
   }
 }
 
@@ -175,7 +286,7 @@ async function readBounded(target: string, limit: number): Promise<Buffer> {
   return value;
 }
 
-function isOlderPackageVersion(value: string, current: string): boolean {
+function isCurrentOrOlderVersion(value: string, current: string): boolean {
   const candidate = parseVersion(value);
   const installed = parseVersion(current);
   if (!candidate || !installed) return false;
@@ -184,6 +295,7 @@ function isOlderPackageVersion(value: string, current: string): boolean {
       return candidate.numbers[index] < installed.numbers[index];
     }
   }
+  if (candidate.preRelease === installed.preRelease) return true;
   return candidate.preRelease !== undefined && installed.preRelease === undefined;
 }
 
@@ -235,6 +347,39 @@ async function assertSafePath(
   }
 }
 
+async function assertSafeNpmPath(
+  target: string,
+  kind: "directory" | "executable" | "file",
+  uid: number | undefined,
+): Promise<void> {
+  let info;
+  try {
+    info = await fs.lstat(target);
+  } catch {
+    throw unsafeNpmInstall();
+  }
+  if (info.isSymbolicLink() ||
+      (kind === "directory" ? !info.isDirectory() : !info.isFile()) ||
+      (uid !== undefined && info.uid !== uid && info.uid !== 0) ||
+      (process.platform !== "win32" && (info.mode & 0o022) !== 0)) {
+    throw unsafeNpmInstall();
+  }
+  if (kind === "executable") {
+    try {
+      await fs.access(target, fsConstants.X_OK);
+    } catch {
+      throw unsafeNpmInstall();
+    }
+  }
+}
+
+function isNpmPackageRoot(packageRoot: string): boolean {
+  const parts = path.resolve(packageRoot).split(path.sep);
+  return path.basename(packageRoot) === PACKAGE_NAME &&
+    path.basename(path.dirname(packageRoot)) === "node_modules" &&
+    !parts.some((part) => part.toLowerCase() === "_npx");
+}
+
 function standaloneRequired(): SafeWhatsAppError {
   return new SafeWhatsAppError(
     "Codex setup requires the reviewed standalone Safe WhatsApp installation.",
@@ -242,9 +387,24 @@ function standaloneRequired(): SafeWhatsAppError {
   );
 }
 
+function npmInstallRequired(): SafeWhatsAppError {
+  return new SafeWhatsAppError(
+    "Codex setup requires Safe WhatsApp to be installed from npm or as a reviewed standalone bundle.",
+    "installed_package_required",
+  );
+}
+
 function unsafeBundle(): SafeWhatsAppError {
   return new SafeWhatsAppError(
     `${PACKAGE_NAME} could not verify its standalone installation. Reinstall the reviewed bundle.`,
     "unsafe_standalone_install",
+  );
+}
+
+
+function unsafeNpmInstall(): SafeWhatsAppError {
+  return new SafeWhatsAppError(
+    `${PACKAGE_NAME} could not verify its npm installation. Reinstall it with npm and retry.`,
+    "unsafe_npm_install",
   );
 }

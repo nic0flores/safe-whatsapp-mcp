@@ -56,7 +56,7 @@ try {
 
   for (const name of [
     "package.json",
-    "package-lock.json",
+    "npm-shrinkwrap.json",
     "README.md",
     "SECURITY.md",
     "CHANGELOG.md",

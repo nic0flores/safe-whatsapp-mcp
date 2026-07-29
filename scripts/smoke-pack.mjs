@@ -1,10 +1,11 @@
 // Agent context note: Verifies the publish tarball, canonical safewhatsapp CLI, safe setup/pairing boundaries, exact MCP tool surface, and shared-broker lifecycle across supported npm platforms. Tests: this script in CI. Critical invariant: child processes invoke reviewed JS entrypoints without a shell while the generated npm command shim is separately validated; no local WhatsApp state or undeclared tool ships. Update this note after meaningful package-contract changes.
 import { execFile as execFileCallback } from "node:child_process";
-import { access, mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -50,6 +51,7 @@ function assertSafePackage(files) {
     "README.md",
     "LICENSE",
     "SECURITY.md",
+    "npm-shrinkwrap.json",
     "dist/cli.js",
   ];
   for (const expected of required) {
@@ -65,12 +67,15 @@ function assertSafePackage(files) {
     "SECURITY.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
+    "npm-shrinkwrap.json",
+    "examples/codex-config.toml",
+    "examples/config.example.json",
+    "examples/stdio-client.example.json",
   ]);
   const outsideAllowlist = files.find(
     (entry) =>
       !allowedFiles.has(entry) &&
-      !entry.startsWith("dist/") &&
-      !entry.startsWith("examples/"),
+      !entry.startsWith("dist/"),
   );
   if (outsideAllowlist) {
     throw new Error(`Package contains a path outside its allowlist: ${outsideAllowlist}`);
@@ -126,12 +131,19 @@ assertSafePackage(includedPaths);
 await assertNoStaleBuild(includedPaths);
 
 const tarball = path.join(tmp, pack.filename);
+const globalPrefix = path.join(tmp, "global");
+await Promise.all((process.platform === "win32"
+  ? [path.join(globalPrefix, "node_modules")]
+  : [path.join(globalPrefix, "bin"), path.join(globalPrefix, "lib", "node_modules")])
+  .map((directory) => mkdir(directory, { recursive: true, mode: 0o700 })));
 await runNpm(
-  ["install", "--no-audit", "--no-fund", tarball],
+  ["install", "--global", "--prefix", globalPrefix, "--no-audit", "--no-fund", tarball],
   { cwd: tmp, env: npmEnv },
 );
 
-const installRoot = path.join(tmp, "node_modules", "safe-whatsapp-mcp");
+const installRoot = process.platform === "win32"
+  ? path.join(globalPrefix, "node_modules", "safe-whatsapp-mcp")
+  : path.join(globalPrefix, "lib", "node_modules", "safe-whatsapp-mcp");
 const installedPackage = JSON.parse(
   await readFile(path.join(installRoot, "package.json"), "utf8"),
 );
@@ -146,18 +158,40 @@ if (installedPackage.bin?.safewhatsapp !== "dist/cli.js") {
 }
 
 const bin = path.join(
-  tmp,
-  "node_modules",
-  ".bin",
-  process.platform === "win32" ? "safewhatsapp.cmd" : "safewhatsapp",
+  globalPrefix,
+  ...(process.platform === "win32"
+    ? ["safewhatsapp.cmd"]
+    : ["bin", "safewhatsapp"]),
 );
 const cliEntry = path.join(installRoot, installedPackage.bin.safewhatsapp);
 await Promise.all([access(bin), access(cliEntry)]);
+const shimHelp = await runInstalledShim(bin, ["--help"], { cwd: tmp });
+if (!shimHelp.stdout.includes("safewhatsapp") || !shimHelp.stdout.includes("setup-codex")) {
+  throw new Error("Globally installed safewhatsapp command did not run");
+}
 const runInstalledCli = (args) => run(process.execPath, [cliEntry, ...args], { cwd: tmp });
 const help = await runInstalledCli(["--help"]);
 if (!help.stdout.includes("safewhatsapp") || !help.stdout.includes("serve") ||
     !help.stdout.includes("setup-codex")) {
   throw new Error("Installed CLI help does not describe the serve command");
+}
+
+const installedRequire = createRequire(path.join(installRoot, "package.json"));
+const keyringEntry = installedRequire.resolve("@napi-rs/keyring");
+const keyring = await import(pathToFileURL(keyringEntry).href);
+if (!keyring || typeof keyring !== "object") {
+  throw new Error("Installed native credential-store dependency did not load");
+}
+
+const selfExecutableUrl = pathToFileURL(
+  path.join(installRoot, "dist", "codex", "selfExecutable.js"),
+).href;
+const { resolveInstalledMcpLaunch } = await import(selfExecutableUrl);
+const installedLaunch = await resolveInstalledMcpLaunch();
+if (installedLaunch.command !== await realpath(process.execPath) ||
+    installedLaunch.args[0] !== await realpath(cliEntry) ||
+    installedLaunch.args[1] !== "serve") {
+  throw new Error("Installed package did not resolve a stable Codex MCP launch");
 }
 
 try {
@@ -261,8 +295,8 @@ async function assertNoStaleBuild(files) {
 
 function mcpChild(name, env) {
   const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [cliEntry, "serve"],
+    command: installedLaunch.command,
+    args: installedLaunch.args,
     env,
     stderr: "pipe",
   });
@@ -274,6 +308,18 @@ function mcpChild(name, env) {
   };
   transport.stderr?.on("data", (chunk) => { child.stderr += chunk.toString(); });
   return child;
+}
+
+async function runInstalledShim(command, args, options) {
+  if (process.platform !== "win32") return run(command, args, options);
+  const commandShell = process.env.ComSpec;
+  if (!commandShell || !path.isAbsolute(commandShell)) {
+    throw new Error("Windows package smoke requires an absolute ComSpec");
+  }
+  const quoted = [command, ...args]
+    .map((value) => `"${value.replaceAll('"', '""')}"`)
+    .join(" ");
+  return run(commandShell, ["/d", "/s", "/c", quoted], options);
 }
 
 async function closeMcpChild(child) {

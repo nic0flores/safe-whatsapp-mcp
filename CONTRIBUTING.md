@@ -8,7 +8,7 @@ Safe WhatsApp MCP started as a personal [Bliss AI](https://www.meditatewithbliss
 
 ## Development setup
 
-Use Node.js 22 or newer:
+Use Node.js 22 or 24:
 
 ```bash
 nvm use # when using nvm; this checkout pins Node in .nvmrc
@@ -25,6 +25,8 @@ Before submitting a change, also run:
 npm run audit:prod
 npm run smoke:pack
 ```
+
+Before publishing, run `npm run verify:release`. The npm publish lifecycle repeats typechecking and tests, while the separate release verification also audits production dependencies and installs the generated tarball globally. Keeping the tarball smoke outside `prepublishOnly` avoids recursively invoking npm's pack lifecycle during publication.
 
 For standalone-distribution changes, also run `npm run build:standalone` followed by `npm run smoke:standalone`. The smoke test must pass with Node removed from the child process's `PATH`; never replace the private-runtime launcher with `/usr/bin/env node`.
 

@@ -5,6 +5,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  CODEX_SETUP_MARKER_ENV,
+  CODEX_SETUP_MARKER_VALUE,
   MEDIA_SEND_ENABLED_ENV,
   SEND_ENABLED_ENV,
   STANDALONE_BUNDLE_ENV,
@@ -12,7 +14,11 @@ import {
   VERSION,
 } from "../dist/constants.js";
 import { CodexConfigRpcError } from "../dist/codex/appServerConfig.js";
-import { resolveStandaloneExecutable } from "../dist/codex/selfExecutable.js";
+import {
+  isRecognizedNpmMcpLaunch,
+  resolveInstalledMcpLaunch,
+  resolveStandaloneExecutable,
+} from "../dist/codex/selfExecutable.js";
 import { setupCodex } from "../dist/codex/setupCodex.js";
 import { WHATSAPP_TOOL_NAMES } from "../dist/mcp/tools.js";
 import { standaloneLauncher } from "../scripts/standalone-layout.mjs";
@@ -40,6 +46,7 @@ setupCodexTest("fresh Codex setup is read-only by default and idempotent", async
     assert.equal(server.command, fixture.executable);
     assert.deepEqual(server.args, ["serve"]);
     assert.deepEqual(server.enabled_tools, [...WHATSAPP_TOOL_NAMES]);
+    assert.equal(server.env[CODEX_SETUP_MARKER_ENV], CODEX_SETUP_MARKER_VALUE);
     assert.equal(server.env[SEND_ENABLED_ENV], "false");
     assert.equal(server.env[MEDIA_SEND_ENABLED_ENV], "false");
     assert.equal(server.tools.open_whatsapp_send_review.approval_mode, "approve");
@@ -233,6 +240,66 @@ setupCodexTest("Codex setup safely replaces a recognized older standalone bundle
   }
 });
 
+setupCodexTest("Codex setup repairs only its own stale installed launch", async () => {
+  const fixture = await setupFixture();
+  try {
+    await setupCodex(fixture.options());
+    await fs.unlink(fixture.executable);
+    const replacement = path.join(fixture.root, "replacement", "safewhatsapp");
+    await fs.mkdir(path.dirname(replacement), { mode: 0o700 });
+    await fs.writeFile(replacement, "launcher", { mode: 0o700 });
+    const repaired = await setupCodex(fixture.options({ executable: replacement }));
+    assert.equal(repaired.changed, true);
+    assert.equal(fixture.server().command, await fs.realpath(replacement));
+
+    const collision = await setupFixture();
+    try {
+      collision.client.userConfig.mcp_servers = {
+        safe_whatsapp: {
+          command: path.join(collision.root, "missing", "safewhatsapp"),
+          args: ["serve"],
+        },
+      };
+      collision.client.syncEffective();
+      await assert.rejects(
+        setupCodex(collision.options()),
+        (error) => error.code === "codex_registration_conflict",
+      );
+    } finally {
+      await collision.cleanup();
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+setupCodexTest("Codex setup writes and preserves an npm-shaped absolute launch", async () => {
+  const fixture = await setupFixture();
+  try {
+    const runtime = path.join(fixture.root, "runtime", "node");
+    const cli = path.join(
+      fixture.root,
+      "lib",
+      "node_modules",
+      "safe-whatsapp-mcp",
+      "dist",
+      "cli.js",
+    );
+    await fs.mkdir(path.dirname(runtime), { recursive: true, mode: 0o700 });
+    await fs.mkdir(path.dirname(cli), { recursive: true, mode: 0o700 });
+    await fs.writeFile(runtime, "runtime", { mode: 0o700 });
+    await fs.writeFile(cli, "#!/usr/bin/env node\n", { mode: 0o700 });
+    const options = fixture.options({ launch: { command: runtime, args: [cli, "serve"] } });
+    const configured = await setupCodex(options);
+    assert.equal(configured.changed, true);
+    assert.equal(fixture.server().command, await fs.realpath(runtime));
+    assert.deepEqual(fixture.server().args, [await fs.realpath(cli), "serve"]);
+    assert.equal((await setupCodex(options)).changed, false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 setupCodexTest("Codex setup canonicalizes allowed CODEX_HOME ancestor aliases", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-codex-canonical-"));
   try {
@@ -398,6 +465,59 @@ setupCodexTest("standalone executable handoff accepts only its verified private 
     await assert.rejects(
       resolveStandaloneExecutable({ environment: {} }),
       (error) => error.code === "standalone_install_required",
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("npm executable handoff accepts an installed package but rejects a linked checkout", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-npm-self-"));
+  try {
+    const packageRoot = path.join(root, "node_modules", "safe-whatsapp-mcp");
+    const modulePath = path.join(packageRoot, "dist", "codex", "selfExecutable.js");
+    const cli = path.join(packageRoot, "dist", "cli.js");
+    const runtime = path.join(root, process.platform === "win32" ? "node.exe" : "node");
+    await fs.mkdir(path.dirname(modulePath), { recursive: true, mode: 0o755 });
+    await fs.writeFile(modulePath, "module", { mode: 0o644 });
+    await fs.writeFile(cli, "#!/usr/bin/env node\n", { mode: 0o755 });
+    await fs.writeFile(runtime, "runtime", { mode: 0o755 });
+    await fs.writeFile(path.join(packageRoot, "package.json"), `${JSON.stringify({
+      name: "safe-whatsapp-mcp",
+      version: VERSION,
+      type: "module",
+      bin: { safewhatsapp: "dist/cli.js" },
+    })}\n`, { mode: 0o644 });
+
+    const launch = await resolveInstalledMcpLaunch({
+      environment: {},
+      modulePath,
+      runtimePath: runtime,
+    });
+    assert.equal(launch.command, await fs.realpath(runtime));
+    assert.deepEqual(launch.args, [await fs.realpath(cli), "serve"]);
+    assert.equal(await isRecognizedNpmMcpLaunch(launch.command, launch.args), true);
+
+    const linkedRoot = path.join(root, "checkout");
+    const linkedModule = path.join(linkedRoot, "dist", "codex", "selfExecutable.js");
+    await fs.mkdir(path.dirname(linkedModule), { recursive: true, mode: 0o755 });
+    await fs.writeFile(linkedModule, "module", { mode: 0o644 });
+    await assert.rejects(
+      resolveInstalledMcpLaunch({
+        environment: {},
+        modulePath: linkedModule,
+        runtimePath: runtime,
+      }),
+      (error) => error.code === "installed_package_required",
+    );
+
+    const npxRoot = path.join(root, ".npm", "_npx", "fixture", "node_modules", "safe-whatsapp-mcp");
+    const npxModule = path.join(npxRoot, "dist", "codex", "selfExecutable.js");
+    await fs.mkdir(path.dirname(npxModule), { recursive: true, mode: 0o755 });
+    await fs.writeFile(npxModule, "module", { mode: 0o644 });
+    await assert.rejects(
+      resolveInstalledMcpLaunch({ environment: {}, modulePath: npxModule, runtimePath: runtime }),
+      (error) => error.code === "installed_package_required",
     );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
