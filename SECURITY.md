@@ -8,7 +8,7 @@ Safe WhatsApp MCP was initially built for a personal [Bliss AI](https://www.medi
 
 ## Supported versions
 
-Version `0.2.0` is the current supported release and introduces the global npm onboarding path. Security fixes target the current `0.2.x` release and `main`. There are no signed standalone release downloads yet.
+Version `0.2.1` is the current supported release. Security fixes target the current `0.2.x` release and `main`. There are no signed standalone release downloads yet.
 
 ## Reporting vulnerabilities
 
@@ -109,8 +109,8 @@ Schema v8 deliberately drops plaintext auth rows from unpublished schema-v7 deve
 - Only a structured, machine-resolved `senderE164` may be used for a cross-system identity lookup. Never derive an identity from a display name or message body.
 - PN/LID alias links are accepted only from bounded structured transport metadata; privacy tombstones and clear cutoffs propagate across the linked aliases.
 - This package does not contain Bliss access and cannot enforce authorization in another MCP. Combining it with a broad administration MCP increases prompt-injection impact.
-- All cached direct and group chats are readable; there is no read allowlist in `0.2.0`.
-- After browser review or legacy preparation and approval, sends may target any WhatsApp-verified direct `+E.164` number or existing group. There is no destination allowlist in `0.2.0`.
+- All cached direct and group chats are readable; there is no read allowlist in `0.2.1`.
+- After browser review or legacy preparation and approval, sends may target any WhatsApp-verified direct `+E.164` number or existing group. There is no destination allowlist in `0.2.1`.
 - Passing message or media plaintext to an AI model moves it outside WhatsApp's end-to-end-encrypted endpoint.
 
 Use the least-privileged MCP set needed for a task. Prefer a narrow business-data tool that returns only the context authorized for the resolved person rather than a general database or administration tool.

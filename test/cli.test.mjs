@@ -25,7 +25,7 @@ test("CLI exposes help/version and has an executable generated shebang", async (
     assert.notEqual((await fs.stat(cli)).mode & 0o100, 0);
   }
   const help = await execFile(process.execPath, [cli, "--help"]);
-  assert.match(help.stdout, /^safewhatsapp 0\.2\.0/mu);
+  assert.match(help.stdout, /^safewhatsapp 0\.2\.1/mu);
   assert.match(help.stdout, /serve/u);
   assert.match(help.stdout, /setup-codex \[--enable-send\] \[--enable-media-send\]/u);
   assert.match(help.stdout, /disconnect/u);
@@ -33,7 +33,7 @@ test("CLI exposes help/version and has an executable generated shebang", async (
   assert.match(help.stdout, /clear account state/u);
   assert.doesNotMatch(help.stdout, /^\s+safewhatsapp broker\b/mu);
   const version = await execFile(process.execPath, [cli, "--version"]);
-  assert.equal(version.stdout.trim(), "0.2.0");
+  assert.equal(version.stdout.trim(), "0.2.1");
   await assert.rejects(
     execFile(process.execPath, [cli, "unknown-command"]),
     (error) => {
@@ -109,7 +109,7 @@ test("a broken native credential-store binding stays behind the safe error bound
     NAPI_RS_NATIVE_LIBRARY_PATH: "/definitely/not/a/keyring.node",
   };
   const version = await execFile(process.execPath, [cli, "--version"], { env });
-  assert.equal(version.stdout.trim(), "0.2.0");
+  assert.equal(version.stdout.trim(), "0.2.1");
 
   const keyStoreUrl = pathToFileURL(path.resolve("dist/auth/masterKeyStore.js")).href;
   const script = [

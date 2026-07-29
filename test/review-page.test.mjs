@@ -142,6 +142,33 @@ test("link preview loads automatically only for drafts without attachments", () 
   assert.match(script, /function previewRequestUrl\(value\).*"https:\/\/" \+ value/u);
 });
 
+test("link preview explains loading and exposes a manual retry after failure", () => {
+  const html = reviewPageHtml();
+  const css = reviewPageCss();
+  const script = reviewPageScript();
+  const loaderStart = script.indexOf("async function loadPreview()");
+  const loaderEnd = script.indexOf("async function uploadAttachment", loaderStart);
+  const loader = script.slice(loaderStart, loaderEnd);
+
+  assert.match(html, /id="link-card" aria-labelledby="link-title" aria-live="polite" aria-busy="false" hidden/u);
+  assert.match(html, /class="link-spinner" id="link-spinner" aria-hidden="true" hidden/u);
+  assert.match(html, /id="retry-link" type="button" hidden>Retry preview<\/button>/u);
+  assert.match(css, /\.link-spinner \{[^}]*animation: spin \.8s linear infinite/u);
+  assert.match(css, /\.link-card\[data-state="unavailable"\]/u);
+
+  assert.match(script, /nodes\.linkCard\.setAttribute\("aria-busy", mode === "loading" \? "true" : "false"\)/u);
+  assert.match(script, /nodes\.linkTitle\.textContent = "Loading preview…"/u);
+  assert.match(script, /nodes\.linkTitle\.textContent = "Preview unavailable"/u);
+  assert.match(script, /Retry, or send without one\./u);
+  assert.match(script, /url !== previewFailureUrl && !activePreview\(\)/u);
+  assert.match(loader, /previewLoadingUrl = url/u);
+  assert.match(loader, /previewFailureUrl = url; previewFailureCode = error/u);
+  assert.doesNotMatch(loader, /removedPreviewUrl = url/u);
+  assert.match(script, /function retryPreview\(\).*previewFailureUrl = ""; previewFailureCode = "";.*schedulePreview\(0\)/u);
+  assert.match(script, /nodes\.retryLink\.addEventListener\("click", retryPreview\)/u);
+  assert.match(script, /removedPreviewUrl = firstHttpUrl\(nodes\.text\.value\); previewFailureUrl = ""/u);
+});
+
 test("review composer exposes bidi controls and escapes them in media filenames", () => {
   const script = reviewPageScript();
 

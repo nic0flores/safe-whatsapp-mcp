@@ -1,4 +1,4 @@
-// Agent context note: Fetches one bounded public-web preview through DNS-validated, address-pinned requests and converts optional social or page-icon art to a small local JPEG. Tests: test/link-preview.test.mjs. Prefer social metadata, safely fall back to raster page icons, revalidate every redirect and image hop, share one five-second budget, and never return a remote image URL.
+// Agent context note: Fetches one bounded public-web preview through DNS-validated, address-pinned requests and converts optional social or page-icon art to a small local JPEG. Tests: test/link-preview.test.mjs. Prefer social metadata, safely fall back to raster page icons, revalidate every redirect and image hop, share one ten-second budget, retain safe text metadata when only optional art times out, and never return a remote image URL.
 
 import { promises as dns } from "node:dns";
 import http from "node:http";
@@ -32,7 +32,7 @@ const MAX_HTML_BYTES = 512 * 1_024;
 const MAX_IMAGE_BYTES = 2 * 1_024 * 1_024;
 const MAX_THUMBNAIL_BYTES = 64 * 1_024;
 const MAX_REDIRECTS = 3;
-const MAX_TIMEOUT_MS = 5_000;
+const MAX_TIMEOUT_MS = 10_000;
 const ALLOWED_RASTER_FORMATS = new Set(["avif", "gif", "jpeg", "png", "tiff", "webp"]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const BLOCKED_SUBNETS = compileBlockedSubnets([
@@ -169,12 +169,12 @@ export async function fetchLinkPreview(
           }
         }
       } catch (error) {
-        if (controller.signal.aborted) throw error;
+        if (options.signal?.aborted) throw error;
         // A preview image is optional. Keep the text card when it is unsafe or unavailable.
       }
     }
 
-    if (controller.signal.aborted) throw new LinkPreviewError("timeout");
+    if (options.signal?.aborted) throw new LinkPreviewError("timeout");
     return card;
   } catch (error) {
     if (error instanceof LinkPreviewError) throw error;

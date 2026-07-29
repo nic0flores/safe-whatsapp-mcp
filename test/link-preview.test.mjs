@@ -277,6 +277,77 @@ test("fetchLinkPreview never requests an image hosted on a private address", asy
   assert.equal(requests, 1);
 });
 
+test("fetchLinkPreview keeps safe text metadata when only optional artwork times out", async () => {
+  let requests = 0;
+  const dependencies = {
+    async resolve() {
+      return [PUBLIC_ADDRESS];
+    },
+    async request() {
+      requests += 1;
+      if (requests === 1) {
+        return htmlResponse('<title>Safe text</title><meta name="description" content="Useful description"><meta property="og:image" content="https://page.test/slow.png">');
+      }
+      return await new Promise(() => {});
+    },
+  };
+
+  const started = Date.now();
+  const card = await fetchLinkPreview("https://page.test/", { dependencies, timeoutMs: 25 });
+  assert.equal(card.title, "Safe text");
+  assert.equal(card.description, "Useful description");
+  assert.equal(card.jpegThumbnail, undefined);
+  assert.equal(requests, 2);
+  assert.ok(Date.now() - started < 500, "optional artwork must share the original deadline");
+});
+
+test("fetchLinkPreview keeps safe text metadata when artwork sanitizing times out", async () => {
+  let requests = 0;
+  const dependencies = {
+    async resolve() {
+      return [PUBLIC_ADDRESS];
+    },
+    async request() {
+      requests += 1;
+      return requests === 1
+        ? htmlResponse('<title>Safe text</title><meta property="og:image" content="https://page.test/slow.png">')
+        : response(200, { "content-type": "image/png" }, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    },
+    async sanitizeImage() {
+      return await new Promise(() => {});
+    },
+  };
+
+  const card = await fetchLinkPreview("https://page.test/", { dependencies, timeoutMs: 25 });
+  assert.equal(card.title, "Safe text");
+  assert.equal(card.jpegThumbnail, undefined);
+  assert.equal(requests, 2);
+});
+
+test("fetchLinkPreview still honors external cancellation during optional artwork", async () => {
+  let requests = 0;
+  const controller = new AbortController();
+  const dependencies = {
+    async resolve() {
+      return [PUBLIC_ADDRESS];
+    },
+    async request() {
+      requests += 1;
+      if (requests === 1) {
+        return htmlResponse('<title>Safe text</title><meta property="og:image" content="https://page.test/slow.png">');
+      }
+      return await new Promise(() => {});
+    },
+  };
+  setTimeout(() => controller.abort(), 25);
+
+  await rejectsWithCode(
+    () => fetchLinkPreview("https://page.test/", { dependencies, signal: controller.signal, timeoutMs: 1_000 }),
+    "timeout",
+  );
+  assert.equal(requests, 2);
+});
+
 test("fetchLinkPreview enforces one bounded timeout even when an injected request stalls", async () => {
   const dependencies = {
     async resolve() {

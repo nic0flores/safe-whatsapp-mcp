@@ -20,7 +20,7 @@ Issues, security-minded reviews, and small auditable improvements are welcome. S
 
 ## Project status
 
-Version `0.2.0` is the first public release with supported npm onboarding. The project remains experimental and there are no signed GitHub standalone downloads yet; review the source and security model before pairing a primary account.
+Version `0.2.1` is the current public release with supported npm onboarding. The project remains experimental and there are no signed GitHub standalone downloads yet; review the source and security model before pairing a primary account.
 
 ## Quick start
 
@@ -191,7 +191,7 @@ This creates `release/safewhatsapp-v<version>-<os>-<arch>/` plus a compressed ar
 To install a reviewed archive without Node or npm, extract its whole directory to a stable location and link only its launcher onto `PATH`. For example, set `bundle_name` to the archive name for your version and target:
 
 ```bash
-bundle_name=safewhatsapp-v0.2.0-darwin-arm64
+bundle_name=safewhatsapp-v0.2.1-darwin-arm64
 mkdir -p "$HOME/.local/lib/safewhatsapp" "$HOME/.local/bin"
 tar -xzf "release/$bundle_name.tar.gz" -C "$HOME/.local/lib/safewhatsapp"
 ln -sfn "$HOME/.local/lib/safewhatsapp/$bundle_name/safewhatsapp" "$HOME/.local/bin/safewhatsapp"
@@ -319,7 +319,7 @@ Sending is off unless explicitly enabled in the MCP server environment:
 
 These flags are deployment kill switches, not approval for an individual message. The preferred flow is draft → private browser review → browser click → single-use send. The older prepare → exact preview → prompted legacy send flow remains supported.
 
-Direct destinations must be canonical `+E.164` numbers and are verified with WhatsApp. The review page offers only locally named, cached existing groups through review-scoped opaque choices; every displayed group name includes a stable masked identifier, and an unknown or unnamed requested group fails closed. The page never accepts an editable transport JID. There is deliberately no send allowlist in `0.2.0`: after browser review or legacy approval, a send can target any verified direct number or reviewable existing group. Broadcasts, channels, status, and arbitrary raw JIDs are rejected.
+Direct destinations must be canonical `+E.164` numbers and are verified with WhatsApp. The review page offers only locally named, cached existing groups through review-scoped opaque choices; every displayed group name includes a stable masked identifier, and an unknown or unnamed requested group fails closed. The page never accepts an editable transport JID. There is deliberately no send allowlist in `0.2.1`: after browser review or legacy approval, a send can target any verified direct number or reviewable existing group. Broadcasts, channels, status, and arbitrary raw JIDs are rejected.
 
 The legacy approval preview visibly escapes bidirectional and other invisible Unicode formatting controls. The browser composer separately warns when message text contains bidirectional controls and shows an exact escaped rendering; group and filename labels escape those controls too. This keeps the bytes that will actually be sent inspectable without silently changing them.
 
@@ -331,7 +331,7 @@ For outbound media, first place the file in:
 
 The media prepare and review tools initially accept only a relative path beneath that directory. Absolute paths, traversal, symlink escapes, non-regular files, and files over the configured limit (hard maximum 25 MiB) are rejected. The review page can replace that attachment only through its explicit file picker and bounded upload; it never accepts another filesystem path. Exact bytes are snapshotted into private pending storage and bound by hash. Each displayed attachment also has a random review revision that the browser must return on Send, so a stale duplicate tab cannot authorize different media. Images, video, audio, and documents are supported; audio captions are rejected because WhatsApp's audio payload does not carry them.
 
-For a text-only draft, the page automatically loads a card for the first HTTP(S) or `www.` link. This contacts the linked site from your computer, so it may see your public IP address. The card can be removed without changing the message, and no preview is loaded while a file is attached. Fetching is bounded to public addresses on ports 80/443, revalidates DNS and redirects, sends no cookies/auth/referrer, caps downloaded data, and converts accepted artwork to a small local JPEG. Editing the URL invalidates the card. The reviewed card—or an explicit `null`—is passed to Baileys so it cannot fetch a different preview during transport.
+For a text-only draft, the page automatically loads a card for the first HTTP(S) or `www.` link. This contacts the linked site from your computer, so it may see your public IP address. Loading is visible; if a site temporarily fails, the page shows **Preview unavailable** with a manual retry instead of retrying in a loop. The card can be removed without changing the message, and no preview is loaded while a file is attached. Fetching is bounded to public addresses on ports 80/443, revalidates DNS and redirects, sends no cookies/auth/referrer, caps downloaded data, and converts accepted artwork to a small local JPEG. Editing the URL invalidates the card. The reviewed card—or an explicit `null`—is passed to Baileys so it cannot fetch a different preview during transport.
 
 ## MCP tools
 
@@ -350,7 +350,7 @@ For a text-only draft, the page automatically loads a card for the first HTTP(S)
 | `send_prepared_whatsapp_message` | Send one immutable staged payload | **Yes; always approve** |
 | `discard_prepared_whatsapp_message` | Remove one unsent staged payload | No; writes local state |
 
-All cached direct and group conversations are readable. `0.2.0` has no read allowlist. Keep this in mind before giving an agent other privileged tools in the same conversation.
+All cached direct and group conversations are readable. `0.2.1` has no read allowlist. Keep this in mind before giving an agent other privileged tools in the same conversation.
 
 `fetch_older_whatsapp_messages` makes one bounded request for at most 50 messages. It never follows the history automatically; each additional batch requires another explicit tool call. Current Baileys companion-device behavior is best effort: WhatsApp may accept a request without delivering the history response before the bounded wait ends. In that case the tool reports `pending` rather than claiming that the chat has no older history.
 
@@ -384,7 +384,7 @@ WhatsApp content is end-to-end encrypted in transit to the linked-device endpoin
 
 ## Scope exclusions
 
-`0.2.0` does not support group administration, broadcasts, channels, status, reactions, outbound edit/delete, calls, location, contacts, polls, view-once sending, auto-replies, scheduled sends, or bulk sends.
+`0.2.1` does not support group administration, broadcasts, channels, status, reactions, outbound edit/delete, calls, location, contacts, polls, view-once sending, auto-replies, scheduled sends, or bulk sends.
 
 ## Development
 
@@ -401,6 +401,6 @@ Tests use injected fake sockets; they must not connect to WhatsApp. A live perso
 
 ## Status and license
 
-Version `0.2.0` supports global npm installation as the primary onboarding path. There is no signed GitHub standalone release yet; locally built standalone bundles remain the Node-free alternative.
+Version `0.2.1` supports global npm installation as the primary onboarding path. There is no signed GitHub standalone release yet; locally built standalone bundles remain the Node-free alternative.
 
 Licensed under the [MIT License](LICENSE). Use [GitHub Issues](https://github.com/dhruvratra/safe-whatsapp-mcp/issues) for non-sensitive bugs and feature requests, [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance, and [SECURITY.md](SECURITY.md) for private vulnerability reporting.

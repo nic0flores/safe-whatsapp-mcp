@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 0.2.1 - 2026-07-29
+
+### Changed
+
+- Pairing, finalizing, linked, and failure screens now use the same Bliss visual system and three-petal mark as the browser send review.
+- The finalizing screen now shows an accessible activity indicator while WhatsApp completes linking, including a motion-reduced state.
+
+### Fixed
+
+- Link-preview loading is now visible, a temporary preview failure offers a single user-controlled retry instead of silently hiding the card, and slow optional artwork no longer discards already validated title and description metadata.
+
 ## 0.2.0 - 2026-07-29
 
 ### Added

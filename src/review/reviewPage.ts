@@ -1,4 +1,4 @@
-// Agent context note: Serves the static, self-contained human review composer UI. Tests: test/review-page.test.mjs plus browser visual QA. Keep user data out of HTML, use DOM-safe assignments, auto-load only link-only previews, and keep rendered assets same-origin.
+// Agent context note: Serves the static, self-contained human review composer UI. Tests: test/review-page.test.mjs plus browser visual QA. Keep user data out of HTML, use DOM-safe assignments, auto-load only the first URL in text-only drafts, keep failures user-retryable, and keep rendered assets same-origin.
 export function reviewPageHtml(): string {
   return String.raw`<!doctype html>
 <html lang="en">
@@ -85,9 +85,9 @@ export function reviewPageHtml(): string {
           <div class="media-meta"><div><strong id="media-name"></strong><small id="media-detail"></small></div><button class="icon-button" id="remove-attachment" type="button" aria-label="Remove attachment">×</button></div>
         </div>
 
-        <section class="link-card" id="link-card" aria-labelledby="link-title" hidden>
-          <div class="link-thumbnail"><img id="link-image" alt="" hidden><span id="link-fallback" aria-hidden="true">↗</span></div>
-          <div class="link-copy"><span id="link-host"></span><strong id="link-title"></strong><p id="link-description" hidden></p></div>
+        <section class="link-card" id="link-card" aria-labelledby="link-title" aria-live="polite" aria-busy="false" hidden>
+          <div class="link-thumbnail"><img id="link-image" alt="" hidden><span id="link-fallback" aria-hidden="true">↗</span><span class="link-spinner" id="link-spinner" aria-hidden="true" hidden></span></div>
+          <div class="link-copy"><span id="link-host"></span><strong id="link-title"></strong><p id="link-description" hidden></p><button class="link-retry" id="retry-link" type="button" hidden>Retry preview</button></div>
           <button class="icon-button" id="remove-link" type="button" aria-label="Remove link preview">×</button>
         </section>
 
@@ -194,6 +194,7 @@ textarea { width: 100%; min-height: 108px; resize: vertical; padding: 13px 14px;
 .media-card { margin-top: 6px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.62); }.media-stage { min-height: 110px; max-height: 260px; display: grid; place-items: center; overflow: hidden; background: #eee8df; }.media-stage img, .media-stage video { width: 100%; max-height: 260px; display: block; object-fit: contain; }.media-stage audio { width: min(420px, calc(100% - 28px)); }.document-preview { min-height: 110px; display: grid; place-items: center; align-content: center; gap: 6px; color: var(--muted); }.document-preview span { padding: 8px 10px; border: 1px solid #cec2b3; border-radius: 9px; color: var(--ink); background: #fff; font-size: 10px; font-weight: 850; }.document-preview small { font-size: 9px; }.media-meta { padding: 9px 11px; }.media-meta > div { min-width: 0; display: grid; }.media-meta strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.media-meta small { color: var(--muted); font-size: 9px; }
 .link-card { margin-top: 12px; border: 1px solid rgba(219,207,191,.88); border-radius: 14px; background: rgba(255,253,248,.82); }
 .link-card { min-height: 74px; position: relative; display: grid; grid-template-columns: 86px minmax(0,1fr); overflow: hidden; }.link-thumbnail { display: grid; place-items: center; overflow: hidden; color: var(--accent-deep); background: linear-gradient(145deg,#f1dfc7,#e9d2b6); font-size: 22px; }.link-thumbnail img { width: 100%; height: 100%; object-fit: cover; }.link-copy { min-width: 0; padding: 11px 40px 11px 12px; display: grid; align-content: center; }.link-copy span { color: var(--accent-deep); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }.link-copy strong { margin-top: 2px; overflow: hidden; font-size: 11px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }.link-copy p { margin: 3px 0 0; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }.link-card > .icon-button { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: rgba(248,243,234,.9); }
+.link-spinner { width: 20px; height: 20px; border: 2px solid rgba(155,94,31,.2); border-top-color: var(--accent-deep); border-radius: 50%; animation: spin .8s linear infinite; }.link-retry { width: max-content; margin-top: 5px; padding: 0; border: 0; color: var(--accent-deep); background: transparent; font-size: 9px; font-weight: 800; cursor: pointer; }.link-retry:hover { text-decoration: underline; }.link-card[data-state="unavailable"] .link-thumbnail { background: linear-gradient(145deg,#f2e8da,#eadfce); }
 .editor-actions { margin-top: 16px; padding-top: 14px; display: flex; align-items: center; justify-content: flex-end; gap: 20px; border-top: 1px solid var(--soft-line); }.editor-actions > div { display: flex; align-items: center; gap: 8px; }
 .secondary-button, .send-button { min-height: 44px; border: 0; border-radius: 999px; cursor: pointer; font-weight: 760; transition: transform .16s ease, box-shadow .16s ease, opacity .16s ease; }.secondary-button { padding: 0 16px; color: var(--muted); background: transparent; }.secondary-button:hover { color: var(--ink); background: #eee6db; }.send-button { min-width: 194px; padding: 0 7px 0 19px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #fff; background: linear-gradient(135deg,#d79545,#bd7427); box-shadow: 0 11px 23px rgba(175,105,29,.23); }.send-button b { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: rgba(255,255,255,.18); }.send-button:hover { transform: translateY(-1px); box-shadow: 0 14px 27px rgba(175,105,29,.28); }
 .progress-view { min-height: 380px; padding: 48px 26px; place-items: center; align-content: center; text-align: center; }.progress-view:not([hidden]) { display: grid; }.spinner { width: 46px; height: 46px; margin-bottom: 21px; border: 3px solid #eadfce; border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }.progress-view h1 { font-size: 31px; }.progress-view > p:not(.eyebrow) { max-width: 390px; margin: 10px 0 0; color: var(--muted); font-size: 12px; }.progress-recipient { max-width: 100%; margin-top: 22px; padding: 8px 13px; overflow: hidden; border: 1px solid var(--line); border-radius: 999px; color: var(--subtle); background: rgba(255,255,255,.62); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }.progress-recipient strong { margin-left: 5px; color: var(--ink); font-size: 10px; }
@@ -224,7 +225,7 @@ export function reviewPageScript(): string {
     emojiToggle: query("#emoji-button"),
     file: query("#attachment-input"), attachmentAction: query("#attachment-action"), mediaCard: query("#media-card"),
     mediaImage: query("#media-image"), mediaVideo: query("#media-video"), mediaAudio: query("#media-audio"), mediaDocument: query("#media-document"), mediaName: query("#media-name"), mediaDetail: query("#media-detail"), removeAttachment: query("#remove-attachment"),
-    linkCard: query("#link-card"), linkImage: query("#link-image"), linkFallback: query("#link-fallback"), linkHost: query("#link-host"), linkTitle: query("#link-title"), linkDescription: query("#link-description"), removeLink: query("#remove-link"),
+    linkCard: query("#link-card"), linkImage: query("#link-image"), linkFallback: query("#link-fallback"), linkSpinner: query("#link-spinner"), linkHost: query("#link-host"), linkTitle: query("#link-title"), linkDescription: query("#link-description"), retryLink: query("#retry-link"), removeLink: query("#remove-link"),
     progressTitle: query("#progress-title"), progressDetail: query("#progress-detail"), progressTo: query("#progress-to"),
     resultMark: query("#result-mark"), resultKicker: query("#result-kicker"), resultTitle: query("#result-title"), resultDetail: query("#result-detail"), receiptSummary: query("#receipt-summary"), receiptFrom: query("#receipt-from"), receiptTo: query("#receipt-to"), receiptMessage: query("#receipt-message"), receiptMessageLabel: query("#receipt-message-label"), receiptText: query("#receipt-text"), receiptReplyRow: query("#receipt-reply-row"), receiptReply: query("#receipt-reply"), receiptAttachmentRow: query("#receipt-attachment-row"), receiptAttachment: query("#receipt-attachment"), receiptLinkRow: query("#receipt-link-row"), receiptLink: query("#receipt-link"), receiptCompleted: query("#receipt-completed"),
     error: query("#error-banner"), errorText: query("#error-text"), cancel: query("#cancel-button"), send: query("#send-button"), sendText: query("#send-button span")
@@ -243,8 +244,8 @@ export function reviewPageScript(): string {
     delivery_uncertain: "Delivery could not be confirmed. Check WhatsApp before taking another action.", send_status_pending: "We are checking whether WhatsApp accepted this send. Do not retry yet.", stale_attachment: "The attachment changed in another tab. Review the refreshed file before sending.", invalid_attachment: "The attachment could not be verified. Review the refreshed draft before sending.", invalid_link_preview: "The link preview changed in another tab. Review the refreshed draft before sending.", preview_failed: "The link preview could not be loaded. You can still send without it.", message_too_long: "This message is longer than WhatsApp allows here.",
     missing_action: "This private review link is incomplete. Open a fresh review from your agent."
   };
-  let state = null; let actionToken = ""; let activeReplyId; let removedPreviewUrl = ""; let observedUrl = "";
-  let pollTimer; let previewTimer; let submitting = false; let previewLoading = false; let submissionStarted = false; let submissionStatusUnknown = false; let submissionNoticeCode = "send_status_pending";
+  let state = null; let actionToken = ""; let activeReplyId; let removedPreviewUrl = ""; let observedUrl = ""; let previewFailureUrl = ""; let previewFailureCode = "";
+  let pollTimer; let previewTimer; let submitting = false; let previewLoading = false; let previewLoadingUrl = ""; let submissionStarted = false; let submissionStatusUnknown = false; let submissionNoticeCode = "send_status_pending";
   const storageKey = "safe-whatsapp-action:" + location.pathname;
 
   function loadActionToken() {
@@ -309,11 +310,16 @@ export function reviewPageScript(): string {
     if (!state || !state.linkPreview || state.media) return null; const currentUrl = firstHttpUrl(nodes.text.value);
     return currentUrl && currentUrl === state.linkPreview.url && currentUrl !== removedPreviewUrl ? state.linkPreview : null;
   }
+  function linkHost(value) { try { return new URL(previewRequestUrl(value)).hostname; } catch { return "Link preview"; } }
+  function previewFailureMessage(code) { return code === "preview_limit_reached" ? "This review reached its preview limit. You can still send without a preview." : "The website did not return a safe, usable preview. Retry, or send without one."; }
   function renderLinkPreview() {
-    const preview = activePreview();
-    nodes.linkCard.hidden = !preview; nodes.linkImage.hidden = true; nodes.linkImage.removeAttribute("src"); nodes.linkFallback.hidden = false;
-    if (!preview) return;
-    try { nodes.linkHost.textContent = new URL(previewRequestUrl(preview.url)).hostname; } catch { nodes.linkHost.textContent = "Link preview"; }
+    const url = firstHttpUrl(nodes.text.value); const eligible = Boolean(state && state.state === "open" && !state.media && url && url !== removedPreviewUrl); const preview = activePreview();
+    const loading = Boolean(eligible && previewLoading && previewLoadingUrl === url); const unavailable = Boolean(eligible && previewFailureUrl === url); const mode = preview ? "ready" : loading ? "loading" : unavailable ? "unavailable" : "hidden";
+    nodes.linkCard.hidden = mode === "hidden"; nodes.linkCard.dataset.state = mode; nodes.linkCard.setAttribute("aria-busy", mode === "loading" ? "true" : "false"); nodes.linkImage.hidden = true; nodes.linkImage.removeAttribute("src"); nodes.linkFallback.hidden = mode === "loading"; nodes.linkSpinner.hidden = mode !== "loading"; nodes.retryLink.hidden = mode !== "unavailable"; nodes.linkHost.textContent = ""; nodes.linkTitle.textContent = ""; nodes.linkDescription.textContent = ""; nodes.linkDescription.hidden = true;
+    if (mode === "hidden") return;
+    nodes.linkHost.textContent = linkHost(preview ? preview.url : url);
+    if (loading) { nodes.linkTitle.textContent = "Loading preview…"; nodes.linkDescription.textContent = "Checking this website for a safe preview."; nodes.linkDescription.hidden = false; return; }
+    if (unavailable) { nodes.linkTitle.textContent = "Preview unavailable"; nodes.linkDescription.textContent = previewFailureMessage(previewFailureCode); nodes.linkDescription.hidden = false; return; }
     nodes.linkTitle.textContent = typeof preview.title === "string" ? preview.title : preview.url;
     const description = typeof preview.description === "string" ? preview.description : ""; nodes.linkDescription.textContent = description; nodes.linkDescription.hidden = !description;
     const thumbnail = sameOriginAsset(preview.thumbnailUrl); if (thumbnail) { setSource(nodes.linkImage, thumbnail); nodes.linkFallback.hidden = true; }
@@ -351,6 +357,7 @@ export function reviewPageScript(): string {
   function renderControls() {
     const phase = state ? state.state : "failed"; const locked = phase !== "open" || submitting;
     for (const node of [nodes.directMode, nodes.groupMode, nodes.e164, nodes.group, nodes.file, nodes.removeReply, nodes.removeAttachment, nodes.removeLink]) node.disabled = locked;
+    nodes.retryLink.disabled = locked || previewLoading;
     nodes.text.disabled = locked || Boolean(state && state.media && state.media.kind === "audio"); nodes.emojiToggle.disabled = nodes.text.disabled;
     nodes.attachmentAction.classList.toggle("is-disabled", locked); nodes.cancel.disabled = phase !== "open" || submitting; nodes.send.disabled = locked || previewPending(); nodes.sendText.textContent = "Send on WhatsApp";
   }
@@ -389,7 +396,7 @@ export function reviewPageScript(): string {
   async function refresh(hydrate) { try { const result = await request("./api"); render(result.data, hydrate); updateCountdown(); } catch (error) { showError(submissionStatusUnknown ? submissionNoticeCode : error.code); if (state && !terminal.has(state.state)) schedulePoll(1500); } }
   function previewPending() {
     const url = firstHttpUrl(nodes.text.value);
-    return Boolean(state && state.state === "open" && !state.media && url && url !== removedPreviewUrl && !activePreview());
+    return Boolean(state && state.state === "open" && !state.media && url && url !== removedPreviewUrl && url !== previewFailureUrl && !activePreview());
   }
   function schedulePreview(delay) {
     clearTimeout(previewTimer);
@@ -397,17 +404,18 @@ export function reviewPageScript(): string {
     previewTimer = setTimeout(loadPreview, delay);
   }
   function updatePreviewOffer() {
-    const url = firstHttpUrl(nodes.text.value); if (url !== observedUrl) { observedUrl = url; removedPreviewUrl = ""; }
+    const url = firstHttpUrl(nodes.text.value); if (url !== observedUrl) { observedUrl = url; removedPreviewUrl = ""; previewFailureUrl = ""; previewFailureCode = ""; }
     renderLinkPreview(); renderControls(); schedulePreview(450);
   }
   async function loadPreview() {
     clearTimeout(previewTimer);
     if (!previewPending() || submitting || previewLoading) return; const url = firstHttpUrl(nodes.text.value);
-    previewLoading = true; clearError(); renderLinkPreview(); renderControls();
-    try { const result = await jsonMutation("./preview", "POST", { url }); if (url !== firstHttpUrl(nodes.text.value) || url === removedPreviewUrl) return; if (isFullState(result.data)) render(result.data, false); else await refresh(false); }
-    catch { if (url === firstHttpUrl(nodes.text.value)) removedPreviewUrl = url; }
-    finally { previewLoading = false; renderLinkPreview(); renderControls(); schedulePreview(0); }
+    previewLoading = true; previewLoadingUrl = url; clearError(); renderLinkPreview(); renderControls();
+    try { const result = await jsonMutation("./preview", "POST", { url }); if (url !== firstHttpUrl(nodes.text.value) || url === removedPreviewUrl) return; if (isFullState(result.data)) render(result.data, false); else await refresh(false); if (activePreview()) { previewFailureUrl = ""; previewFailureCode = ""; } else { previewFailureUrl = url; previewFailureCode = "preview_unavailable"; } }
+    catch (error) { if (url === firstHttpUrl(nodes.text.value) && url !== removedPreviewUrl) { previewFailureUrl = url; previewFailureCode = error && typeof error.code === "string" ? error.code : "preview_unavailable"; } }
+    finally { previewLoading = false; previewLoadingUrl = ""; renderLinkPreview(); renderControls(); schedulePreview(0); }
   }
+  function retryPreview() { const url = firstHttpUrl(nodes.text.value); if (!state || state.state !== "open" || state.media || submitting || previewLoading || url !== previewFailureUrl) return; previewFailureUrl = ""; previewFailureCode = ""; renderLinkPreview(); renderControls(); schedulePreview(0); }
   async function uploadAttachment(file) {
     if (!file || !state || state.state !== "open") return; clearError(); if (Number.isFinite(state.maxMediaBytes) && file.size > state.maxMediaBytes) { showError("media_too_large"); return; }
     submitting = true; renderControls();
@@ -447,7 +455,7 @@ export function reviewPageScript(): string {
     nodes.text.addEventListener("input", () => { updateCount(); updatePreviewOffer(); }); nodes.removeReply.addEventListener("click", () => { activeReplyId = undefined; nodes.replyCard.hidden = true; });
     nodes.emojiToggle.addEventListener("click", () => nodes.text.focus());
     nodes.file.addEventListener("change", () => uploadAttachment(nodes.file.files && nodes.file.files[0])); nodes.removeAttachment.addEventListener("click", removeAttachment);
-    nodes.removeLink.addEventListener("click", () => { clearTimeout(previewTimer); removedPreviewUrl = firstHttpUrl(nodes.text.value); renderLinkPreview(); renderControls(); });
+    nodes.retryLink.addEventListener("click", retryPreview); nodes.removeLink.addEventListener("click", () => { clearTimeout(previewTimer); removedPreviewUrl = firstHttpUrl(nodes.text.value); previewFailureUrl = ""; previewFailureCode = ""; renderLinkPreview(); renderControls(); });
     window.addEventListener("pagehide", () => { clearTimeout(pollTimer); clearTimeout(previewTimer); }); setInterval(updateCountdown, 1000);
   }
   loadActionToken(); configureEmojiHelper(); bind();

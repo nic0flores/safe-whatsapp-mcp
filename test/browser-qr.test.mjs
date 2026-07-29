@@ -41,7 +41,14 @@ test("browser QR stays on a tokenized no-store loopback page and rotates in memo
     assert.match(page, /<script src="\.\/poll\.js" defer><\/script>/u);
     assert.match(page, /\.\/qr\.png\?v=1/u);
     assert.match(page, /Safe WhatsApp/u);
-    assert.match(page, /Reads sync on demand\. Sending still requires your confirmation/u);
+    assert.match(page, /class="brand-mark" aria-hidden="true"><i><\/i><i><\/i><i><\/i><\/span>/u);
+    assert.doesNotMatch(page, /class="mark"[^>]*>SW</u);
+    assert.match(page, /--accent: #d08a35/u);
+    assert.match(page, /class="state-pill"/u);
+    assert.match(page, /aria-busy="false"/u);
+    assert.match(page, /class="spinner"/u);
+    assert.match(page, /@media \(prefers-reduced-motion: reduce\)/u);
+    assert.match(page, /This QR is served only on this computer/u);
     assert.match(page, /Local only/u);
     assert.equal(page.includes(PAYLOAD_A), false);
 
@@ -52,6 +59,8 @@ test("browser QR stays on a tokenized no-store loopback page and rotates in memo
     assert.match(script, /fetch\("\.\/state\.json", \{ cache: "no-store" \}\)/u);
     assert.match(script, /qr\.src = "\.\/qr\.png\?v=" \+ version/u);
     assert.match(script, /Finishing WhatsApp login/u);
+    assert.match(script, /badge\.textContent = "Connecting"/u);
+    assert.match(script, /main\.setAttribute\("aria-busy", phase === "finalizing" \? "true" : "false"\)/u);
     assert.match(script, /Run safewhatsapp connect again/u);
     assert.match(script, /WhatsApp couldn’t link/u);
     assert.match(script, /failures >= 3/u);
@@ -119,6 +128,9 @@ test("browser QR stays on a tokenized no-store loopback page and rotates in memo
     });
     const finalizingPage = await (await fetch(first.url)).text();
     assert.match(finalizingPage, /Finishing WhatsApp login/u);
+    assert.match(finalizingPage, /aria-busy="true"/u);
+    assert.match(finalizingPage, /<b id="badge">Connecting<\/b>/u);
+    assert.match(finalizingPage, /class="spinner"/u);
     assert.doesNotMatch(finalizingPage, /src="\.\/qr\.png/u);
     assert.equal((await fetch(imageUrl)).status, 503);
     await assert.rejects(display.show(PAYLOAD_A), hasCode("qr_display_unavailable"));
@@ -157,6 +169,8 @@ test("a linked page is stable, contains no QR, and lets finish close promptly", 
     const finishing = display.finish();
     const linkedPage = await (await fetch(url)).text();
     assert.match(linkedPage, /WhatsApp linked/u);
+    assert.match(linkedPage, /aria-busy="false"/u);
+    assert.match(linkedPage, /class="result-mark linked-mark">✓<\/span>/u);
     assert.doesNotMatch(linkedPage, /qr\.png|poll\.js|http-equiv=["']refresh/u);
     await finishing;
     closed = true;
