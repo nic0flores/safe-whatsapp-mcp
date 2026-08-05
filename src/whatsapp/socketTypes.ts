@@ -1,5 +1,5 @@
-// Agent context note: Defines the narrow fakeable socket boundary used by sessions, high-level clients, and one-batch on-demand history. Tests: test/core-session-client.test.mjs and test/on-demand-history.test.mjs. Keep normal shutdown separate from explicit logout and keep history timestamps in milliseconds; update this note after meaningful changes.
-import type { WAMessage, WAMessageKey } from "baileys";
+// Agent context note: Defines the narrow fakeable socket boundary used by sessions, high-level clients, exact-ID send acknowledgements, and one-batch history. Tests: test/outbound-acknowledgement.test.mjs, test/core-session-client.test.mjs, and test/on-demand-history.test.mjs. Keep normal shutdown separate from explicit logout and keep history timestamps in milliseconds; update this note after meaningful changes.
+import type { BinaryNode, WAMessage, WAMessageKey } from "baileys";
 
 export interface ConnectionUpdate {
   connection?: "open" | "close" | "connecting";
@@ -25,10 +25,12 @@ export interface WhatsAppSocket {
     oldestMessageKey: WAMessageKey,
     oldestMessageTimestampMs: number,
   ): Promise<string>;
+  resyncAppState(): Promise<void>;
+  waitForMessage(messageId: string, timeoutMs: number): Promise<BinaryNode | undefined>;
   sendMessage(
     jid: string,
     content: unknown,
-    options?: { quoted?: WAMessage },
+    options?: { quoted?: WAMessage; messageId?: string },
   ): Promise<WAMessage | undefined>;
 }
 

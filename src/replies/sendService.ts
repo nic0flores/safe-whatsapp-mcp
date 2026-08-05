@@ -1,4 +1,4 @@
-// Agent context note: Orchestrates legacy staged and browser-reviewed sends with one serialized claim-to-terminal path plus ID-bound review media. Tests: test/send-service.test.mjs. Revalidate final edits, never overlap/retry transport, and never retain terminal plaintext; update this note after meaningful behavior changes.
+// Agent context note: Orchestrates staged/reviewed sends through one serialized accepted/rejected/uncertain path plus exact-ID late failure reconciliation. Tests: test/send-service.test.mjs and test/outbound-acknowledgement.test.mjs. Never overlap/retry transport or retain terminal plaintext; update this note after meaningful changes.
 import { createHash, randomUUID } from "node:crypto";
 import { SafeWhatsAppError, publicError } from "../errors.js";
 import type { SendAuditSink } from "../audit/redactedAudit.js";
@@ -13,11 +13,12 @@ import type {
   PreparedSend,
   ReviewedSendInput,
   SendSummary,
+  OutboundSendResult,
   WhatsAppOutboundSender,
 } from "./types.js";
 import type { PendingSendRepository } from "./pendingStore.js";
 import { assertPayloadIntegrity } from "./recordValidation.js";
-
+import { completeTransportOutcome } from "./sendOutcome.js";
 export interface OutboundMediaStager {
   snapshot(relativePath: string, pendingId: string): Promise<OutboundMediaSnapshot>;
   snapshotBytes(bytes: Uint8Array, fileName: string, pendingId: string): Promise<OutboundMediaSnapshot>;
@@ -33,7 +34,6 @@ export interface SendServiceOptions {
   historyRetentionMs?: number;
   now?: () => Date;
 }
-
 export interface WhatsAppSendOperations {
   prepareText(input: DestinationInput & { text: string; replyToMessageId?: string }): Promise<PreparedSend>;
   prepareMedia(input: DestinationInput & { outboxPath: string; caption?: string; replyToMessageId?: string }): Promise<PreparedSend>;
@@ -64,9 +64,17 @@ export class WhatsAppSendService implements WhatsAppSendOperations {
     this.now = options.now ?? (() => new Date());
     this.historyRetentionMs = options.historyRetentionMs ?? 30 * 86_400_000;
   }
-
   async initialize(): Promise<void> {
     await this.maintain();
+  }
+
+  async reconcileTransportFailure(messageId: string, errorCode: string): Promise<string | undefined> {
+    return this.exclusiveSend(async () => {
+      const record = await this.store.reconcileTransportFailure(messageId, errorCode, this.now());
+      if (!record) return undefined;
+      await this.cleanTerminal(record, "send", "failed", errorCode);
+      return record.id;
+    });
   }
 
   async prepareText(
@@ -253,6 +261,8 @@ export class WhatsAppSendService implements WhatsAppSendOperations {
     }
 
     let transportStarted = false;
+    let transportMessageId: string | undefined;
+    let result: OutboundSendResult;
     try {
       const payload = claimed.payload;
       if (!payload) {
@@ -262,32 +272,32 @@ export class WhatsAppSendService implements WhatsAppSendOperations {
         throw new SafeWhatsAppError("The prepared send record is incomplete.", "pending_send_corrupt");
       }
       assertPayloadIntegrity(payload, claimed.approvalPreview, claimed.digest, claimed.id);
-      const result = payload.kind === "text"
-        ? await (async () => {
-            transportStarted = true;
-            return this.sender.sendText(
-              payload.destination,
-              payload.text,
-              payload.replyToMessageId,
-              payload.linkPreview,
-            );
-          })()
+      const bindTransportMessage = async (messageId: string) => {
+        await this.store.bindTransportMessageId(claimed.id, messageId, this.now());
+        transportMessageId = messageId;
+        transportStarted = true;
+      };
+      result = payload.kind === "text"
+        ? await this.sender.sendText(
+            payload.destination,
+            payload.text,
+            payload.replyToMessageId,
+            payload.linkPreview,
+            bindTransportMessage,
+          )
         : await (async () => {
             const media = await this.media.readVerified(payload.media, claimed.id);
-            transportStarted = true;
             return this.sender.sendMedia(
               payload.destination,
               media,
               payload.caption,
               payload.replyToMessageId,
+              bindTransportMessage,
             );
           })();
-
-      const sent = await this.store.finish(claimed.id, "sent", this.now(), {
-        transportMessageId: result.messageId,
-      });
-      await this.cleanTerminal(sent, "send", "sent");
-      return { state: "sent", whatsappMessageId: result.messageId };
+      if (result.messageId !== transportMessageId) {
+        result = { outcome: "uncertain", messageId: transportMessageId ?? result.messageId };
+      }
     } catch (error) {
       const publicFailure = publicError(error);
       const state = transportStarted ? "uncertain" : "failed";
@@ -313,6 +323,24 @@ export class WhatsAppSendService implements WhatsAppSendOperations {
       }
       throw error;
     }
+
+    const completed = await completeTransportOutcome(this.store, claimed, result, this.now());
+    await this.cleanTerminal(
+      completed.record,
+      "send",
+      completed.state,
+      completed.errorCode,
+    );
+    if (result.outcome === "accepted" && completed.state !== "failed") {
+      return { state: "sent", whatsappMessageId: result.messageId };
+    }
+    if (result.outcome === "rejected" || completed.state === "failed") {
+      throw new SafeWhatsAppError("WhatsApp rejected the message.", "send_rejected");
+    }
+    throw new SafeWhatsAppError(
+      "WhatsApp acceptance could not be confirmed. Inspect the chat before preparing another send.",
+      "send_uncertain",
+    );
   }
 
   private async exclusiveSend<T>(operation: () => Promise<T>): Promise<T> {

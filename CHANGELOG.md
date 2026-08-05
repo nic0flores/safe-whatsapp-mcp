@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 0.2.2 - 2026-08-05
+
+### Added
+
+- Exact-ID WhatsApp server acknowledgement tracking with distinct accepted, rejected, and uncertain outcomes.
+- `resync_whatsapp_messages` for an app-state deletion/clear refresh with explicit non-authoritative reconciliation reporting.
+
+### Fixed
+
+- The review receipt no longer treats a locally generated Baileys message ID or WebSocket write as WhatsApp acceptance.
+- Generated transport IDs are durably bound before relay; late exact-ID negative acknowledgements are journaled, race-safe, and reconcile retained send records and open review receipts to failed.
+- Baileys local outbound echoes and outbound retry caches are disabled without weakening inbound decryption recovery. Cached chat history now changes only through WhatsApp history/events.
+- Timeouts cover both the relay and acknowledgement wait, and known WhatsApp outcomes are not relabelled by a later local ledger-write failure.
+
 ## 0.2.1 - 2026-07-29
 
 ### Changed

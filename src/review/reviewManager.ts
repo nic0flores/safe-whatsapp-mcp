@@ -361,6 +361,16 @@ export class SendReviewManager implements WhatsAppReviewOperations, ReviewHttpDe
     });
   }
 
+  async reconcileTransportFailure(pendingId: string): Promise<void> {
+    const session = this.sessionsById.get(pendingId);
+    if (!session) return;
+    await this.serialize(session, async () => {
+      if (session.state !== "sent" && session.state !== "uncertain") return;
+      session.state = "failed";
+      session.errorCode = "send_rejected";
+    });
+  }
+
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;

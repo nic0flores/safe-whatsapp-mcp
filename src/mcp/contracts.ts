@@ -21,6 +21,7 @@ export interface WhatsAppReadOperations {
     limit: number;
     beforeMessageId?: string;
   }): Promise<Record<string, unknown>>;
+  resyncMessages(): Promise<Record<string, unknown>>;
   searchMessages(input: {
     query: string;
     chatId?: string;

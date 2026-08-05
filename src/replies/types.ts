@@ -1,4 +1,4 @@
-// Agent context note: Defines legacy staged sends plus browser-reviewed payloads and injected resolver/transport boundaries. Tests: test/send-service.test.mjs. Every transport-relevant preview/media field must stay ID-bound and integrity checked; update this note after meaningful behavior changes.
+// Agent context note: Defines staged/reviewed payloads plus resolver and acknowledged transport boundaries. Tests: test/send-service.test.mjs and test/outbound-acknowledgement.test.mjs. Every transport-relevant field must stay ID-bound, and transport outcomes must distinguish acceptance, rejection, and uncertainty; update this note after meaningful changes.
 import type { OutboundMediaContent, OutboundMediaSnapshot } from "../media/types.js";
 
 export interface DestinationInput {
@@ -19,19 +19,28 @@ export interface DestinationResolver {
   assertReplyTarget(chatId: string, messageId: string): Promise<void>;
 }
 
+export type OutboundSendResult =
+  | { outcome: "accepted"; messageId: string }
+  | { outcome: "rejected"; messageId: string; errorCode: string }
+  | { outcome: "uncertain"; messageId: string };
+
+export type BindTransportMessage = (messageId: string) => Promise<void>;
+
 export interface WhatsAppOutboundSender {
   sendText(
     destination: ResolvedDestination,
     text: string,
     replyToMessageId?: string,
     linkPreview?: PendingLinkPreview | null,
-  ): Promise<{ messageId: string }>;
+    bindTransportMessage?: BindTransportMessage,
+  ): Promise<OutboundSendResult>;
   sendMedia(
     destination: ResolvedDestination,
     media: OutboundMediaContent,
     caption?: string,
     replyToMessageId?: string,
-  ): Promise<{ messageId: string }>;
+    bindTransportMessage?: BindTransportMessage,
+  ): Promise<OutboundSendResult>;
 }
 
 export interface PendingLinkPreview {

@@ -1,4 +1,4 @@
-// Agent context note: Composes the locked production stack and OS-vault-backed connect/unlink/purge lifecycle. Tests: test/core-lifecycle.test.mjs and test/account-lifecycle.test.mjs. Quiesce auth writes before cleanup, retire wrapping keys with explicit post-erasure abandonment only, require ownership for destructive work, and preserve config/outbox; update this note after meaningful changes.
+// Agent context note: Composes the locked production stack, durable outbound-failure journal, and OS-vault-backed account lifecycle. Tests: test/core-lifecycle.test.mjs, test/account-lifecycle.test.mjs, and test/message-resync.test.mjs. Quiesce writes before cleanup, require ownership for destructive work, and preserve config/outbox; update this note after meaningful changes.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { SafeWhatsAppConfig } from "../config/config.js";
@@ -7,6 +7,7 @@ import { KeyringMasterKeyStore, type MasterKeyStore } from "../auth/masterKeySto
 import { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import { IdentityStore } from "../messages/identityStore.js";
 import { MessageStore } from "../messages/messageStore.js";
+import { OutboundFailureJournal } from "../replies/outboundFailureJournal.js";
 import {
   assertStateOwnership,
   clearAccountBoundState,
@@ -48,6 +49,8 @@ export class WhatsAppCore {
     readonly sessions: SessionManager,
     readonly client: WhatsAppClient,
     private readonly lock: ProcessLock,
+    private readonly router?: EventRouter,
+    readonly outboundFailures?: OutboundFailureJournal,
   ) {}
 
   static async open(
@@ -73,7 +76,8 @@ export class WhatsAppCore {
       }
       const identities = new IdentityStore(state);
       const messages = new MessageStore(state, identities, config);
-      const router = new EventRouter(auth, messages);
+      const outboundFailures = new OutboundFailureJournal(state);
+      const router = new EventRouter(auth, messages, outboundFailures);
       const factory = new BaileysSocketFactory(auth);
       const sessions = new SessionManager(factory, router, {
         syncTimeoutMs: options.syncTimeoutMs ?? config.syncTimeoutMs,
@@ -91,7 +95,16 @@ export class WhatsAppCore {
         undefined,
         () => auth!.isPaired(),
       );
-      return new WhatsAppCore(state, auth, messages, sessions, client, lock);
+      return new WhatsAppCore(
+        state,
+        auth,
+        messages,
+        sessions,
+        client,
+        lock,
+        router,
+        outboundFailures,
+      );
     } catch (error) {
       try {
         await auth?.close().catch(() => undefined);
@@ -121,6 +134,12 @@ export class WhatsAppCore {
     await clearAccountBoundState(this.state);
     await this.auth.retireCredentialVault();
     return { wasPaired, remoteLogout };
+  }
+
+  onOutboundRejection(
+    listener: (rejection: { messageId: string; errorCode: string }) => void | Promise<void>,
+  ): () => void {
+    return this.router?.onOutboundRejection(listener) ?? (() => undefined);
   }
 
   async close(): Promise<void> {

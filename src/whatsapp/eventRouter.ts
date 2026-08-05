@@ -1,6 +1,7 @@
-// Agent context note: Routes supported Baileys events into durable auth, identity, chat, and message state, completing sync only after the final recent-history chunk is ingested, with an awaitable credential barrier for pairing restarts. Tests: test/core-event-router.test.mjs. Pending notifications and isLatest are not history completion; do not add presence/read-receipt side effects; update this note after meaningful changes.
+// Agent context note: Routes Baileys events into durable auth/chat state, journals exact-ID late send rejections before reporting them, and completes sync only after final recent history. Tests: test/core-event-router.test.mjs and test/message-resync.test.mjs. Pending notifications are not completion; do not add presence/read-receipt effects or treat send echoes as authority; update this note after meaningful changes.
 import {
   proto,
+  WAMessageStatus,
   type AuthenticationCreds,
   type GroupMetadata,
   type GroupParticipant,
@@ -10,7 +11,9 @@ import {
 } from "baileys";
 import type { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import type { MessageStore } from "../messages/messageStore.js";
+import type { OutboundFailureJournal } from "../replies/outboundFailureJournal.js";
 import type { ConnectionUpdate, SocketEvents } from "./socketTypes.js";
+import { rejectionErrorCode } from "./outboundAcknowledgement.js";
 
 export interface EventRouterHooks {
   onConnectionUpdate?(update: ConnectionUpdate): void;
@@ -21,10 +24,14 @@ export interface EventRouterHooks {
 export class EventRouter {
   private credentialPersistence = Promise.resolve();
   private credentialFailure?: unknown;
+  private readonly outboundRejectionListeners = new Set<(
+    rejection: { messageId: string; errorCode: string },
+  ) => void | Promise<void>>();
 
   constructor(
     private readonly auth: SqliteAuthState,
     private readonly messages: MessageStore,
+    private readonly outboundFailures?: OutboundFailureJournal,
   ) {}
 
   async waitForCredentialPersistence(): Promise<void> {
@@ -34,6 +41,13 @@ export class EventRouter {
       await pending;
     } while (pending !== this.credentialPersistence);
     if (this.credentialFailure) throw this.credentialFailure;
+  }
+
+  onOutboundRejection(
+    listener: (rejection: { messageId: string; errorCode: string }) => void | Promise<void>,
+  ): () => void {
+    this.outboundRejectionListeners.add(listener);
+    return () => this.outboundRejectionListeners.delete(listener);
   }
 
   attach(events: SocketEvents, hooks: EventRouterHooks = {}): () => void {
@@ -86,6 +100,21 @@ export class EventRouter {
       this.messages.ingestUpsert(update);
     });
     on<WAMessageUpdate[]>("messages.update", (updates) => {
+      for (const item of updates) {
+        if (item.key.fromMe !== true || typeof item.key.id !== "string" ||
+            item.update.status !== WAMessageStatus.ERROR) continue;
+        const rejection = {
+          messageId: item.key.id,
+          errorCode: rejectionErrorCode(item.update.messageStubParameters?.[0]),
+        };
+        this.outboundFailures?.record(rejection.messageId, rejection.errorCode);
+        for (const listener of this.outboundRejectionListeners) {
+          try {
+            const result = listener(rejection);
+            if (result instanceof Promise) void result.catch(() => undefined);
+          } catch { /* A late transport signal must never escape Baileys' emitter. */ }
+        }
+      }
       this.messages.applyUpdates(updates);
     });
     on<{ keys: WAMessageKey[] } | { jid: string; all: true }>("messages.delete", (update) => {

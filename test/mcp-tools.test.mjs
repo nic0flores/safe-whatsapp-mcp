@@ -4,13 +4,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createWhatsAppMcpServer, MCP_SERVER_INSTRUCTIONS } from "../dist/mcp/server.js";
 import { expectedToolNames } from "../dist/mcp/tools.js";
 
-test("MCP exposes exactly twelve schema-backed tools with the intended risk annotations", async () => {
+test("MCP exposes exactly thirteen schema-backed tools with the intended risk annotations", async () => {
   const { client, close } = await connectedClient(fakeServices());
   const response = await client.listTools();
   const tools = new Map(response.tools.map((tool) => [tool.name, tool]));
 
   assert.deepEqual([...tools.keys()].sort(), [...expectedToolNames()].sort());
-  assert.equal(tools.size, 12);
+  assert.equal(tools.size, 13);
   for (const tool of tools.values()) {
     assert.equal(tool.inputSchema.type, "object");
     assert.equal(tool.outputSchema.type, "object");
@@ -34,6 +34,11 @@ test("MCP exposes exactly twelve schema-backed tools with the intended risk anno
   assert.deepEqual(tools.get("fetch_older_whatsapp_messages").annotations, {
     readOnlyHint: true,
     destructiveHint: false,
+    openWorldHint: true,
+  });
+  assert.deepEqual(tools.get("resync_whatsapp_messages").annotations, {
+    readOnlyHint: false,
+    destructiveHint: true,
     openWorldHint: true,
   });
   assert.equal(tools.get("get_whatsapp_media").annotations.openWorldHint, true);
@@ -70,6 +75,10 @@ test("tools return structured data and inline media content", async () => {
   });
   assert.equal(history.structuredContent.data.outcome, "received");
   assert.equal(services.calls.fetchOlderMessages, 1);
+
+  const resync = await client.callTool({ name: "resync_whatsapp_messages", arguments: {} });
+  assert.equal(resync.structuredContent.data.authoritative, false);
+  assert.equal(services.calls.resyncMessages, 1);
 
   const media = await client.callTool({ name: "get_whatsapp_media", arguments: { messageId: "m1" } });
   assert.equal(media.structuredContent.data.delivery, "inline");
@@ -132,7 +141,7 @@ test("unknown resource-read failures are sanitized", async () => {
 });
 
 function fakeServices() {
-  const calls = { fetchOlderMessages: 0, prepareText: 0, openReview: 0 };
+  const calls = { fetchOlderMessages: 0, resyncMessages: 0, prepareText: 0, openReview: 0 };
   return {
     calls,
     reader: {
@@ -142,6 +151,10 @@ function fakeServices() {
       async fetchOlderMessages(input) {
         calls.fetchOlderMessages += 1;
         return { outcome: "received", input };
+      },
+      async resyncMessages() {
+        calls.resyncMessages += 1;
+        return { outcome: "refreshed_non_authoritative", authoritative: false };
       },
       async searchMessages(input) { return { messages: [], input }; },
     },

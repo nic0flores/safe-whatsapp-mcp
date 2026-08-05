@@ -1,4 +1,4 @@
-// Agent context note: Strictly validates and durably persists staged-send records, serializes transitions, and prunes stale draft temps. Tests: test/send-service.test.mjs. Only integrity-checked, no-follow prepared records may atomically become sending; update this note after meaningful behavior changes.
+// Agent context note: Strictly validates staged sends, binds transport IDs before relay, serializes terminal transitions, and reconciles exact-ID late rejections. Tests: test/send-service.test.mjs and test/message-resync.test.mjs. Only integrity-checked records may send, and late failures must match the durable transport ID; update this note after meaningful changes.
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
@@ -12,7 +12,9 @@ export interface PendingSendRepository {
   get(id: string): Promise<PendingSendRecord | undefined>;
   list(): Promise<PendingSendRecord[]>;
   claim(id: string, digest: string, approvalPreview: string, now: Date): Promise<PendingSendRecord>;
+  bindTransportMessageId(id: string, messageId: string, now: Date): Promise<PendingSendRecord>;
   finish(id: string, state: "sent" | "failed" | "uncertain", now: Date, details?: { transportMessageId?: string; errorCode?: string }): Promise<PendingSendRecord>;
+  reconcileTransportFailure(messageId: string, errorCode: string, now: Date): Promise<PendingSendRecord | undefined>;
   discard(id: string, now: Date): Promise<PendingSendRecord | undefined>;
   expirePrepared(now: Date): Promise<PendingSendRecord[]>;
   recoverSending(now: Date): Promise<PendingSendRecord[]>;
@@ -89,11 +91,57 @@ export class FilePendingSendStore implements PendingSendRepository {
   ): Promise<PendingSendRecord> {
     return this.exclusive(async () => {
       const record = await this.require(id);
+      if (record.state === "failed" && record.transportMessageId &&
+          (!details.transportMessageId || details.transportMessageId === record.transportMessageId)) {
+        return record;
+      }
       if (record.state !== "sending") throw stateError(record.state);
       if (!record.payload) throw corruptRecordError();
+      if (record.transportMessageId && details.transportMessageId &&
+          record.transportMessageId !== details.transportMessageId) throw corruptRecordError();
       const finished = { ...updateState(record, state, now), ...details };
       await this.write({ ...finished, payload: null, approvalPreview: null });
       return finished;
+    });
+  }
+
+  async bindTransportMessageId(
+    id: string,
+    messageId: string,
+    now: Date,
+  ): Promise<PendingSendRecord> {
+    if (!messageId || messageId.length > 512) throw corruptRecordError();
+    return this.exclusive(async () => {
+      const record = await this.require(id);
+      if (record.state !== "sending" || !record.payload) throw stateError(record.state);
+      if (record.transportMessageId) {
+        if (record.transportMessageId !== messageId) throw corruptRecordError();
+        return record;
+      }
+      const bound = { ...updateState(record, "sending", now), transportMessageId: messageId };
+      await this.write(bound);
+      return bound;
+    });
+  }
+
+  async reconcileTransportFailure(
+    messageId: string,
+    errorCode: string,
+    now: Date,
+  ): Promise<PendingSendRecord | undefined> {
+    return this.exclusive(async () => {
+      const record = (await this.list()).find((candidate) =>
+        candidate.transportMessageId === messageId &&
+        (candidate.state === "uncertain" || candidate.state === "sent" || candidate.state === "failed"),
+      );
+      if (!record) return undefined;
+      if (record.state === "failed") return record;
+      const failed = {
+        ...updateState(record, "failed", now),
+        errorCode,
+      };
+      await this.write({ ...failed, payload: null, approvalPreview: null });
+      return failed;
     });
   }
 

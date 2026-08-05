@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { WAMessageStatus } from "baileys";
 import { EventRouter } from "../dist/whatsapp/eventRouter.js";
 
 class Events {
@@ -132,4 +133,29 @@ test("synchronous message-store failures never escape the Baileys emitter", () =
   });
   assert.doesNotThrow(() => events.emit("messages.upsert", { messages: [], type: "notify" }));
   assert.equal(failure.message, "sqlite failed");
+});
+
+test("late outbound rejection reports only an exact from-me error with a sanitized code", () => {
+  const events = new Events();
+  const rejections = [];
+  const order = [];
+  const messages = {
+    linkLidMapping() {}, linkUserAliases() {}, ingestHistory() {}, ingestUpsert() {},
+    applyUpdates() {}, applyDeletes() {}, upsertChats() {}, deleteChats() {},
+    upsertContacts() {}, upsertGroups() {}, updateGroupParticipants() {},
+  };
+  const journal = { record: (messageId, errorCode) => order.push(["journal", messageId, errorCode]) };
+  const router = new EventRouter({ saveCreds: async () => undefined }, messages, journal);
+  router.onOutboundRejection((value) => { order.push(["listener"]); rejections.push(value); });
+  router.attach(events);
+  events.emit("messages.update", [
+    { key: { id: "outbound", fromMe: true }, update: { status: WAMessageStatus.ERROR, messageStubParameters: ["463"] } },
+    { key: { id: "inbound", fromMe: false }, update: { status: WAMessageStatus.ERROR, messageStubParameters: ["private"] } },
+    { key: { id: "delivered", fromMe: true }, update: { status: WAMessageStatus.DELIVERY_ACK } },
+  ]);
+  assert.deepEqual(rejections, [{ messageId: "outbound", errorCode: "whatsapp_rejected_463" }]);
+  assert.deepEqual(order, [
+    ["journal", "outbound", "whatsapp_rejected_463"],
+    ["listener"],
+  ]);
 });

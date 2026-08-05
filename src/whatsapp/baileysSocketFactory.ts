@@ -1,5 +1,5 @@
-// Agent context note: Creates production Baileys sockets with passive presence, compatible bounded history sync, one-batch on-demand history access, live group-send metadata, and no database-backed retry relay. Tests: test/core-session-client.test.mjs and test/on-demand-history.test.mjs. Never use full-history registration for the bounded local cache, stale cached participants, or resend messages that bypassed this MCP's confirmation flow; update this note after meaningful changes.
-import makeWASocket, { Browsers, type WAMessage } from "baileys";
+// Agent context note: Creates production Baileys sockets with passive presence, no local send echoes/retries, exact-ID acknowledgement waits, app-state resync, and bounded history access. Tests: test/outbound-acknowledgement.test.mjs, test/core-session-client.test.mjs, and test/on-demand-history.test.mjs. Never use full-history registration for the bounded cache or resend messages that bypassed confirmation; update this note after meaningful changes.
+import makeWASocket, { ALL_WA_PATCH_NAMES, Browsers, type WAMessage } from "baileys";
 import type { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import type { SocketEvents, SocketFactory, WhatsAppSocket } from "./socketTypes.js";
 
@@ -15,6 +15,7 @@ export class BaileysSocketFactory implements SocketFactory {
       browser: Browsers.appropriate("Desktop"),
       markOnlineOnConnect: false,
       syncFullHistory: false,
+      ...SAFE_OUTBOUND_SOCKET_POLICY,
       shouldIgnoreJid: (jid) =>
         jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.includes("@newsletter"),
       getMessage: noPersistentRetryMessage,
@@ -30,11 +31,18 @@ export class BaileysSocketFactory implements SocketFactory {
       onWhatsApp: async (...phoneNumbers) => (await socket.onWhatsApp(...phoneNumbers)) ?? [],
       fetchMessageHistory: (count, oldestMessageKey, oldestMessageTimestampMs) =>
         socket.fetchMessageHistory(count, oldestMessageKey, oldestMessageTimestampMs),
+      resyncAppState: () => socket.resyncAppState(ALL_WA_PATCH_NAMES, false),
+      waitForMessage: (messageId, timeoutMs) => socket.waitForMessage(messageId, timeoutMs),
       sendMessage: async (jid, content, options) =>
         socket.sendMessage(jid, content as never, options as never) as Promise<WAMessage | undefined>,
     };
   }
 }
+
+export const SAFE_OUTBOUND_SOCKET_POLICY = Object.freeze({
+  emitOwnEvents: false,
+  enableRecentMessageCache: false,
+});
 
 export async function noPersistentRetryMessage(): Promise<undefined> {
   return undefined;

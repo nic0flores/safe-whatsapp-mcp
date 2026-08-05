@@ -20,7 +20,7 @@ Issues, security-minded reviews, and small auditable improvements are welcome. S
 
 ## Project status
 
-Version `0.2.1` is the current public release with supported npm onboarding. The project remains experimental and there are no signed GitHub standalone downloads yet; review the source and security model before pairing a primary account.
+Version `0.2.2` is the current source release with supported npm onboarding. The project remains experimental and there are no signed GitHub standalone downloads yet; review the source and security model before pairing a primary account.
 
 ## Quick start
 
@@ -98,7 +98,7 @@ When you ask Codex to open a send review, it opens a private local composer with
 
 ### Installation details and upgrades
 
-For an npm installation, `setup-codex` verifies a stable installed-package layout and pins the absolute paths of both the current Node executable and installed CLI instead of relying on `PATH` when MCP starts. An in-place npm upgrade takes effect at those paths automatically. Run `setup-codex` again if the Node or global npm prefix path changes; its setup marker lets a new installation repair its own stale entry without replacing an unrelated same-name server. Reinstall the package after changing Node major versions so native dependencies match, then restart Codex. The command uses Codex's atomic configuration API, preserves unrelated settings and comments, keeps all sending opt-in, and refuses to enable sending unless approval prompts are routed to you.
+For an npm installation, `setup-codex` verifies a stable installed-package layout and pins the absolute paths of both the current Node executable and installed CLI instead of relying on `PATH` when MCP starts. An in-place npm upgrade takes effect at those paths automatically, but rerun `setup-codex` when a release adds MCP tools because Codex keeps an exact tool allowlist. For `0.2.2`, use the same access command you chose above—especially `safewhatsapp setup-codex --enable-send --enable-media-send` if both gates were enabled—then fully restart Codex. Also rerun setup if the Node or global npm prefix path changes; its setup marker lets a new installation repair its own stale entry without replacing an unrelated same-name server. Reinstall the package after changing Node major versions so native dependencies match. The command uses Codex's atomic configuration API, preserves unrelated settings and comments, keeps all sending opt-in, and refuses to enable sending unless approval prompts are routed to you.
 
 Automatic `setup-codex` is currently supported on macOS and Linux. The installed MCP server itself is package-smoke-tested on Windows, but Windows users must configure the STDIO entry and approval policy manually for now.
 
@@ -137,7 +137,7 @@ The default boundary is the MCP tool versus the private review page:
 2. `open_whatsapp_send_review` stages any initial attachment, opens a random-capability page on `127.0.0.1`, and returns immediately without sending.
 3. You verify the linked sending number when available, then inspect and edit the recipient, group, text/caption, reply context, and attachment. You can inspect or remove the link preview; editing its source URL regenerates it. If Baileys has not retained a canonical phone JID, the page says the account number is unavailable rather than guessing.
 4. Only the page's **Send on WhatsApp** button freezes that displayed revision and enters the single-use transport path. The editor is replaced by a sending indicator while WhatsApp is contacted.
-5. Sent, failed, and uncertain outcomes replace the editor with a frozen summary of the attempted payload. Attachment bytes are cleaned immediately while safe filename/type/size metadata remains visible; an uncertain result is never retried automatically.
+5. The page stays on **Sending** until the exact message ID receives a WhatsApp server acknowledgement. Acceptance becomes **Sent**, an explicit negative acknowledgement becomes **Not sent**, and a timeout or disconnect becomes **Outcome uncertain**. Attachment bytes are cleaned immediately while safe filename/type/size metadata remains visible; failed and uncertain sends are never retried automatically.
 
 The review expires after ten minutes, permits at most one transport attempt, and never returns its route or action secret to MCP. There is no generic one-step or bulk-send tool. The legacy prepare/digest/send tools remain available for compatibility; that actual send tool keeps its destructive annotation and mandatory Codex prompt.
 
@@ -191,7 +191,7 @@ This creates `release/safewhatsapp-v<version>-<os>-<arch>/` plus a compressed ar
 To install a reviewed archive without Node or npm, extract its whole directory to a stable location and link only its launcher onto `PATH`. For example, set `bundle_name` to the archive name for your version and target:
 
 ```bash
-bundle_name=safewhatsapp-v0.2.1-darwin-arm64
+bundle_name=safewhatsapp-v0.2.2-darwin-arm64
 mkdir -p "$HOME/.local/lib/safewhatsapp" "$HOME/.local/bin"
 tar -xzf "release/$bundle_name.tar.gz" -C "$HOME/.local/lib/safewhatsapp"
 ln -sfn "$HOME/.local/lib/safewhatsapp/$bundle_name/safewhatsapp" "$HOME/.local/bin/safewhatsapp"
@@ -270,7 +270,7 @@ safewhatsapp setup-codex --enable-send --enable-media-send
                                          # browser-reviewed text and media sending
 ```
 
-This updates only `mcp_servers.safe_whatsapp` through Codex's atomic configuration API. It does not change the user's global model, sandbox, approval policy, or approval reviewer. A same-name server with a different command is treated as a conflict instead of being overwritten. Existing stricter server approval settings, disabled state, and tool deny list are preserved. For npm, setup pins the absolute installed Node and CLI paths; rerun it when either path changes. In-place upgrades at the same paths are picked up automatically. For standalone, rerun setup after installing a newer bundle so Codex follows the new verified launcher.
+This updates only `mcp_servers.safe_whatsapp` through Codex's atomic configuration API. It does not change the user's global model, sandbox, approval policy, or approval reviewer. A same-name server with a different command is treated as a conflict instead of being overwritten. Existing stricter server approval settings, disabled state, and tool deny list are preserved. For npm, setup pins the absolute installed Node and CLI paths; rerun it when either path changes or a release adds a tool to the exact allowlist. For standalone, rerun setup after installing a newer bundle so Codex follows the new verified launcher.
 
 If an existing Safe WhatsApp entry is disabled, setup leaves it disabled and says so. Enable that entry in Codex before restarting if you want its tools loaded.
 
@@ -319,7 +319,7 @@ Sending is off unless explicitly enabled in the MCP server environment:
 
 These flags are deployment kill switches, not approval for an individual message. The preferred flow is draft → private browser review → browser click → single-use send. The older prepare → exact preview → prompted legacy send flow remains supported.
 
-Direct destinations must be canonical `+E.164` numbers and are verified with WhatsApp. The review page offers only locally named, cached existing groups through review-scoped opaque choices; every displayed group name includes a stable masked identifier, and an unknown or unnamed requested group fails closed. The page never accepts an editable transport JID. There is deliberately no send allowlist in `0.2.1`: after browser review or legacy approval, a send can target any verified direct number or reviewable existing group. Broadcasts, channels, status, and arbitrary raw JIDs are rejected.
+Direct destinations must be canonical `+E.164` numbers and are verified with WhatsApp. The review page offers only locally named, cached existing groups through review-scoped opaque choices; every displayed group name includes a stable masked identifier, and an unknown or unnamed requested group fails closed. The page never accepts an editable transport JID. There is deliberately no send allowlist in `0.2.2`: after browser review or legacy approval, a send can target any verified direct number or reviewable existing group. Broadcasts, channels, status, and arbitrary raw JIDs are rejected.
 
 The legacy approval preview visibly escapes bidirectional and other invisible Unicode formatting controls. The browser composer separately warns when message text contains bidirectional controls and shows an exact escaped rendering; group and filename labels escape those controls too. This keeps the bytes that will actually be sent inspectable without silently changing them.
 
@@ -341,6 +341,7 @@ For a text-only draft, the page automatically loads a card for the first HTTP(S)
 | `list_whatsapp_chats` | Paginated direct/group summaries | No |
 | `read_whatsapp_chat` | Paginated retained messages without marking read | No |
 | `fetch_older_whatsapp_messages` | Request one best-effort batch of older messages for a cached chat | No chat mutation; writes retained local cache |
+| `resync_whatsapp_messages` | Refresh available WhatsApp delete/clear state | Reads WhatsApp state; explicit server mutations may remove cache rows |
 | `search_whatsapp_messages` | Search retained text and captions | No |
 | `get_whatsapp_media` | Explicitly decrypt one retained attachment | No |
 | `list_whatsapp_sends` | Inspect staged and historical send records | No |
@@ -350,7 +351,7 @@ For a text-only draft, the page automatically loads a card for the first HTTP(S)
 | `send_prepared_whatsapp_message` | Send one immutable staged payload | **Yes; always approve** |
 | `discard_prepared_whatsapp_message` | Remove one unsent staged payload | No; writes local state |
 
-All cached direct and group conversations are readable. `0.2.1` has no read allowlist. Keep this in mind before giving an agent other privileged tools in the same conversation.
+All cached direct and group conversations are readable. `0.2.2` has no read allowlist. Keep this in mind before giving an agent other privileged tools in the same conversation.
 
 `fetch_older_whatsapp_messages` makes one bounded request for at most 50 messages. It never follows the history automatically; each additional batch requires another explicit tool call. Current Baileys companion-device behavior is best effort: WhatsApp may accept a request without delivering the history response before the bounded wait ends. In that case the tool reports `pending` rather than claiming that the chat has no older history.
 
@@ -358,12 +359,17 @@ When a batch arrives, `newlyRetainedCount` and `anchorAdvanced` distinguish real
 
 Fetched messages pass through the same deletion, expiry, view-once, and deduplication rules as synchronized messages. They also obey the configured `retentionDays` and `maxMessagesPerChat` limits, so a batch outside those bounds may not remain in the local cache. Raise those settings deliberately before retaining more history; the expanded cache remains plaintext under private file permissions.
 
+`resync_whatsapp_messages` asks the active linked-device session to refresh available app-state patches so delete-for-me, clear-chat, and delete-chat mutations can be applied. New sends never create local history echoes; a sent message enters cached history only if WhatsApp later supplies it through a sync or message event.
+
+WhatsApp's linked-device protocol does not expose a reliable authoritative whole-account message inventory to this package. A reconnect, recent-history phase, or one-page on-demand response can all be partial. The resync result therefore reports `authoritative: false` and `absenceReconciled: false`; it never deletes a cached message merely because that message was absent from a partial response. A true absence-based deletion pass would require a request-correlated complete snapshot from WhatsApp, which the current Baileys transport cannot guarantee.
+
 ## Data behavior
 
 - Default retention is seven days and at most 200 messages per chat.
 - Synchronization may report `partial`; a linked device cannot make a stateless, complete inbox fetch on every launch.
 - Older-history fetching is one best-effort batch of at most 50 messages per explicit call; it does not page automatically, and `pending` does not mean the end of history.
 - Incoming history and live updates are deduplicated. Edits, revocations, deletions, and disappearing-message expiry are applied before data is exposed.
+- Outbound sends are not inserted into cached chat history locally. They appear only if WhatsApp later supplies them through its history or server event stream.
 - Direct-chat edits, revocations, clear events, and tombstones propagate across WhatsApp's verified PN/LID aliases, including when that alias mapping arrives after the deletion.
 - View-once media is never persisted or exposed.
 - Attachment bytes are downloaded only after `get_whatsapp_media` is called, up to 25 MiB.
@@ -384,7 +390,7 @@ WhatsApp content is end-to-end encrypted in transit to the linked-device endpoin
 
 ## Scope exclusions
 
-`0.2.1` does not support group administration, broadcasts, channels, status, reactions, outbound edit/delete, calls, location, contacts, polls, view-once sending, auto-replies, scheduled sends, or bulk sends.
+`0.2.2` does not support group administration, broadcasts, channels, status, reactions, outbound edit/delete, calls, location, contacts, polls, view-once sending, auto-replies, scheduled sends, or bulk sends.
 
 ## Development
 
@@ -401,6 +407,6 @@ Tests use injected fake sockets; they must not connect to WhatsApp. A live perso
 
 ## Status and license
 
-Version `0.2.1` supports global npm installation as the primary onboarding path. There is no signed GitHub standalone release yet; locally built standalone bundles remain the Node-free alternative.
+Version `0.2.2` supports global npm installation as the primary onboarding path. There is no signed GitHub standalone release yet; locally built standalone bundles remain the Node-free alternative.
 
 Licensed under the [MIT License](LICENSE). Use [GitHub Issues](https://github.com/dhruvratra/safe-whatsapp-mcp/issues) for non-sensitive bugs and feature requests, [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance, and [SECURITY.md](SECURITY.md) for private vulnerability reporting.

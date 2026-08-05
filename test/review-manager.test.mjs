@@ -322,6 +322,33 @@ test("a sent review retains one frozen capability-free summary of the exact appr
   }
 });
 
+test("a correlated late rejection corrects a still-open sent summary", async () => {
+  const context = makeContext();
+  const opened = await context.manager.open({
+    kind: "text",
+    e164: TEST_RECIPIENT_E164,
+    text: "late outcome",
+  });
+  const capability = parseCapability(context.browserUrl);
+  const session = context.manager.findByRoute(capability.routeToken);
+  try {
+    assert.equal((await post(capability, "send", {
+      recipientMode: "direct",
+      e164: TEST_RECIPIENT_E164,
+      text: "late outcome",
+      attachmentId: null,
+    })).status, 202);
+    await eventually(() => session.state === "sent");
+    await context.manager.reconcileTransportFailure(opened.reviewId);
+    const corrected = await getState(context.browserUrl);
+    assert.equal(corrected.state, "failed");
+    assert.equal(corrected.errorCode, "send_rejected");
+    assert.equal(corrected.submittedSummary.text, "late outcome");
+  } finally {
+    await context.manager.close();
+  }
+});
+
 test("a failed media send retains safe attachment metadata after its snapshot is removed", async () => {
   const completedAt = "2026-07-29T09:30:00.000Z";
   const context = makeContext({

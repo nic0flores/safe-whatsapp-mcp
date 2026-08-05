@@ -60,6 +60,13 @@ test("review composer keeps only the compact single-column review surface", () =
   ]) assert.equal(html.includes(removed), false, removed);
 });
 
+test("review outcomes distinguish server acceptance, rejection, and uncertainty", () => {
+  const script = reviewPageScript();
+  assert.match(script, /sent: \["Sent", "WhatsApp accepted this message\."\]/u);
+  assert.match(script, /failed: \["Not sent", "WhatsApp did not accept this message\."\]/u);
+  assert.match(script, /uncertain: \["Outcome uncertain", "WhatsApp acceptance could not be confirmed\."\]/u);
+});
+
 test("review composer moves the fragment secret out of browser history", () => {
   const script = reviewPageScript();
 
@@ -201,7 +208,7 @@ test("review composer locks permanently after send begins and polls terminal sta
   assert.match(script, /jsonMutation\("\.\/cancel", "POST", \{\}\)/u);
   assert.match(script, /new Set\(\["sent", "failed", "uncertain", "cancelled", "expired"\]\)/u);
   assert.match(script, /if \(!state \|\| state\.state !== "open" \|\| submitting\) return/u);
-  assert.match(script, /Delivery could not be confirmed/u);
+  assert.match(script, /WhatsApp acceptance could not be confirmed/u);
 });
 
 test("sending and terminal views render an exact capability-free receipt", () => {

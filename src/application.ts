@@ -1,4 +1,4 @@
-// Agent context note: Composes encrypted auth, retained reads, legacy/reviewed sends, and broker-owned browser reviews. Tests: application/account lifecycle, send-service, review-manager, and package smoke. Keep WhatsApp the only message transport and never let reviewed preview bytes be refetched implicitly.
+// Agent context note: Composes encrypted auth, retained reads, guarded resync, acknowledged sends, and broker-owned browser reviews. Tests: application/account lifecycle, message-resync, send-service, review-manager, and package smoke. Keep WhatsApp the only transport, partial history non-authoritative, and reviewed preview bytes immutable.
 import type { AnyMessageContent, WAUrlInfo } from "baileys";
 import type { MasterKeyStore } from "./auth/masterKeyStore.js";
 import { JsonLineAuditLogger } from "./audit/redactedAudit.js";
@@ -14,9 +14,11 @@ import { FilePendingSendStore } from "./replies/pendingStore.js";
 import { WhatsAppSendService } from "./replies/sendService.js";
 import { SendReviewManager } from "./review/reviewManager.js";
 import type {
+  BindTransportMessage,
   DestinationInput,
   DestinationResolver,
   PendingLinkPreview,
+  OutboundSendResult,
   ResolvedDestination,
   WhatsAppOutboundSender,
 } from "./replies/types.js";
@@ -41,6 +43,8 @@ export class SafeWhatsAppApplication {
     readonly inboundMedia: InboundMediaService,
     readonly reviews: SendReviewManager,
     readonly services: WhatsAppMcpServices,
+    private readonly detachOutboundRejection: () => void,
+    private readonly awaitOutboundRejections: () => Promise<void>,
   ) {}
 
   static async open(options: ApplicationOptions = {}): Promise<SafeWhatsAppApplication> {
@@ -54,6 +58,8 @@ export class SafeWhatsAppApplication {
       clearResidualIfUnpaired: options.clearResidualIfUnpaired,
       masterKeyStore: options.masterKeyStore,
     });
+    let detachOutboundRejection: () => void = () => undefined;
+    let outboundRejections = Promise.resolve();
     try {
       const inboundSource = new ClientMediaSource(core.client);
       const inboundMedia = new InboundMediaService(
@@ -67,8 +73,9 @@ export class SafeWhatsAppApplication {
         paths.pendingDir,
         config.maxMediaBytes,
       );
+      const pendingStore = new FilePendingSendStore(paths.pendingDir);
       const sends = new WhatsAppSendService(
-        new FilePendingSendStore(paths.pendingDir),
+        pendingStore,
         new ClientDestinationResolver(core),
         outbox,
         new ClientOutboundSender(core),
@@ -90,10 +97,26 @@ export class SafeWhatsAppApplication {
         ttlMs: config.pendingTtlMs,
         fromLabel: linkedAccountLabel(core),
       });
+      const enqueueOutboundFailure = (messageId: string, errorCode: string) => {
+        const reconciliation = outboundRejections.then(async () => {
+          const pendingId = await sends.reconcileTransportFailure(messageId, errorCode);
+          if (!pendingId) return;
+          core.outboundFailures?.remove(messageId);
+          await reviews.reconcileTransportFailure(pendingId);
+        });
+        outboundRejections = reconciliation.catch(() => undefined);
+        return reconciliation;
+      };
+      detachOutboundRejection = core.onOutboundRejection(({ messageId, errorCode }) =>
+        enqueueOutboundFailure(messageId, errorCode));
       await Promise.all([
         reader.reconcileMedia(),
         sends.initialize(),
       ]);
+      core.outboundFailures?.prune(new Date(Date.now() - 30 * 86_400_000));
+      for (const failure of core.outboundFailures?.list() ?? []) {
+        await enqueueOutboundFailure(failure.messageId, failure.errorCode).catch(() => undefined);
+      }
       return new SafeWhatsAppApplication(
         paths,
         config,
@@ -101,8 +124,12 @@ export class SafeWhatsAppApplication {
         inboundMedia,
         reviews,
         { reader, media: inboundMedia, sends, reviews },
+        detachOutboundRejection,
+        () => outboundRejections,
       );
     } catch (error) {
+      detachOutboundRejection();
+      await outboundRejections;
       await core.close().catch(() => undefined);
       throw error;
     }
@@ -112,6 +139,8 @@ export class SafeWhatsAppApplication {
     try {
       await this.reviews.close();
     } finally {
+      this.detachOutboundRejection();
+      await this.awaitOutboundRejections();
       await this.core.close();
     }
   }
@@ -215,6 +244,20 @@ class ClientReadOperations implements WhatsAppReadOperations {
     return result;
   }
 
+  async resyncMessages(): Promise<Record<string, unknown>> {
+    const syncCompleteness = await this.core.client.resyncMessages();
+    await this.reconcileMedia();
+    return {
+      outcome: "refreshed_non_authoritative",
+      authoritative: false,
+      appStateRefreshRequestCompleted: true,
+      syncCompleteness,
+      absenceReconciled: false,
+      removedByAbsence: 0,
+      reason: "whatsapp_authoritative_message_snapshot_unavailable",
+    };
+  }
+
   async searchMessages(input: {
     query: string;
     chatId?: string;
@@ -265,15 +308,21 @@ class ClientOutboundSender implements WhatsAppOutboundSender {
     text: string,
     replyToMessageId?: string,
     linkPreview?: PendingLinkPreview | null,
-  ): Promise<{ messageId: string }> {
+    bindTransportMessage?: BindTransportMessage,
+  ): Promise<OutboundSendResult> {
     const content: AnyMessageContent = {
       text,
       ...(linkPreview !== undefined
         ? { linkPreview: linkPreview === null ? null : baileysLinkPreview(linkPreview) }
         : {}),
     };
-    const result = await this.core.client.sendMessage(destination, content, replyToMessageId);
-    return { messageId: result.sourceId };
+    const result = await this.core.client.sendMessage(
+      destination,
+      content,
+      replyToMessageId,
+      bindTransportMessage,
+    );
+    return outboundSendResult(result);
   }
 
   async sendMedia(
@@ -281,14 +330,22 @@ class ClientOutboundSender implements WhatsAppOutboundSender {
     media: OutboundMediaContent,
     caption?: string,
     replyToMessageId?: string,
-  ): Promise<{ messageId: string }> {
+    bindTransportMessage?: BindTransportMessage,
+  ): Promise<OutboundSendResult> {
     const result = await this.core.client.sendMessage(
       destination,
       mediaContent(media, caption),
       replyToMessageId,
+      bindTransportMessage,
     );
-    return { messageId: result.sourceId };
+    return outboundSendResult(result);
   }
+}
+
+function outboundSendResult(result: Awaited<ReturnType<WhatsAppCore["client"]["sendMessage"]>>): OutboundSendResult {
+  return result.outcome === "rejected"
+    ? { outcome: "rejected", messageId: result.sourceId, errorCode: result.errorCode }
+    : { outcome: result.outcome, messageId: result.sourceId };
 }
 
 function baileysLinkPreview(preview: PendingLinkPreview): WAUrlInfo {

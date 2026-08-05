@@ -234,14 +234,14 @@ export function reviewPageScript(): string {
   const terminal = new Set(["sent", "failed", "uncertain", "cancelled", "expired"]);
   const phaseCopy = {
     open: ["Ready", "Review and edit before sending."], validating: ["Sending", "Checking the final details."], sending: ["Sending", "Waiting for WhatsApp to confirm the send."],
-    sent: ["Sent", "WhatsApp accepted this message."], failed: ["Not sent", "WhatsApp could not send this message."], uncertain: ["Check WhatsApp", "The connection ended before delivery could be confirmed."],
+    sent: ["Sent", "WhatsApp accepted this message."], failed: ["Not sent", "WhatsApp did not accept this message."], uncertain: ["Outcome uncertain", "WhatsApp acceptance could not be confirmed."],
     cancelled: ["Cancelled", "This review closed without sending."], expired: ["Expired", "This review closed without sending."]
   };
   const errorCopy = {
     invalid_recipient: "Enter a valid international phone number or choose a group.", invalid_message: "Add a message or attachment before sending.",
     media_too_large: "That file is larger than this review allows.", unsupported_media: "That file type cannot be sent safely.",
-    review_expired: "This private review has expired.", connection_failed: "WhatsApp is not connected right now.", send_failed: "WhatsApp could not send this message.",
-    delivery_uncertain: "Delivery could not be confirmed. Check WhatsApp before taking another action.", send_status_pending: "We are checking whether WhatsApp accepted this send. Do not retry yet.", stale_attachment: "The attachment changed in another tab. Review the refreshed file before sending.", invalid_attachment: "The attachment could not be verified. Review the refreshed draft before sending.", invalid_link_preview: "The link preview changed in another tab. Review the refreshed draft before sending.", preview_failed: "The link preview could not be loaded. You can still send without it.", message_too_long: "This message is longer than WhatsApp allows here.",
+    review_expired: "This private review has expired.", connection_failed: "WhatsApp is not connected right now.", send_failed: "WhatsApp could not send this message.", send_rejected: "WhatsApp rejected this message. It was not sent.",
+    delivery_uncertain: "WhatsApp acceptance could not be confirmed. Check your phone before retrying.", send_status_pending: "We are checking whether WhatsApp accepted this send. Do not retry yet.", stale_attachment: "The attachment changed in another tab. Review the refreshed file before sending.", invalid_attachment: "The attachment could not be verified. Review the refreshed draft before sending.", invalid_link_preview: "The link preview changed in another tab. Review the refreshed draft before sending.", preview_failed: "The link preview could not be loaded. You can still send without it.", message_too_long: "This message is longer than WhatsApp allows here.",
     missing_action: "This private review link is incomplete. Open a fresh review from your agent."
   };
   let state = null; let actionToken = ""; let activeReplyId; let removedPreviewUrl = ""; let observedUrl = ""; let previewFailureUrl = ""; let previewFailureCode = "";

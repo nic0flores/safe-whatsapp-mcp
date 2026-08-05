@@ -213,6 +213,7 @@ const expectedTools = [
   "prepare_whatsapp_media_send",
   "prepare_whatsapp_text_send",
   "read_whatsapp_chat",
+  "resync_whatsapp_messages",
   "search_whatsapp_messages",
   "send_prepared_whatsapp_message",
 ];

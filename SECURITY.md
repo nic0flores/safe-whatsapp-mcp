@@ -8,7 +8,7 @@ Safe WhatsApp MCP was initially built for a personal [Bliss AI](https://www.medi
 
 ## Supported versions
 
-Version `0.2.1` is the current supported release. Security fixes target the current `0.2.x` release and `main`. There are no signed standalone release downloads yet.
+Version `0.2.2` is the current supported source release. Security fixes target the current `0.2.x` release and `main`. There are no signed standalone release downloads yet.
 
 ## Reporting vulnerabilities
 
@@ -109,8 +109,8 @@ Schema v8 deliberately drops plaintext auth rows from unpublished schema-v7 deve
 - Only a structured, machine-resolved `senderE164` may be used for a cross-system identity lookup. Never derive an identity from a display name or message body.
 - PN/LID alias links are accepted only from bounded structured transport metadata; privacy tombstones and clear cutoffs propagate across the linked aliases.
 - This package does not contain Bliss access and cannot enforce authorization in another MCP. Combining it with a broad administration MCP increases prompt-injection impact.
-- All cached direct and group chats are readable; there is no read allowlist in `0.2.1`.
-- After browser review or legacy preparation and approval, sends may target any WhatsApp-verified direct `+E.164` number or existing group. There is no destination allowlist in `0.2.1`.
+- All cached direct and group chats are readable; there is no read allowlist in `0.2.2`.
+- After browser review or legacy preparation and approval, sends may target any WhatsApp-verified direct `+E.164` number or existing group. There is no destination allowlist in `0.2.2`.
 - Passing message or media plaintext to an AI model moves it outside WhatsApp's end-to-end-encrypted endpoint.
 
 Use the least-privileged MCP set needed for a task. Prefer a narrow business-data tool that returns only the context authorized for the resolved person rather than a general database or administration tool.
@@ -131,7 +131,7 @@ SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND=false
 Enabling a flag does not constitute approval for an individual send. Only `open_whatsapp_send_review` is safe to auto-approve for WhatsApp transport because that MCP operation cannot send a message; opening its page may still perform the bounded first-link preview fetch described above. Never auto-approve `send_prepared_whatsapp_message`.
 The supported Codex setup requires `--enable-send` before it accepts the additional `--enable-media-send` opt-in; media permission can never bypass the base send gate.
 
-Direct-recipient verification requires WhatsApp to return exactly one phone JID encoding the requested canonical `+E.164` number. The approval preview visibly escapes invisible Unicode formatting controls, and the stored digest binds the exact recipient, payload, and preview. A claimed send is never automatically retried; an interrupted or ambiguous result becomes `uncertain` and requires inspection of the chat before another draft is prepared.
+Direct-recipient verification requires WhatsApp to return exactly one phone JID encoding the requested canonical `+E.164` number. The approval preview visibly escapes invisible Unicode formatting controls, and the stored digest binds the exact recipient, payload, and preview. Before relay, the generated transport message ID is durably bound to the claimed send. Only an exact-ID server acknowledgement is treated as accepted; an explicit negative acknowledgement is failed, while timeout or disconnect is uncertain. Late negative acknowledgements are journaled before asynchronous reconciliation. A claimed send is never automatically retried; inspect the phone before preparing another draft after an uncertain result.
 
 Media can be staged only from a real, regular file beneath `~/.safe-whatsapp-mcp/outbox/`. Path traversal, absolute paths, and symlink escapes are rejected. The outbox is user-controlled and is not removed by the general purge command.
 

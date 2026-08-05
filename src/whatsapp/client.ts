@@ -1,6 +1,7 @@
-// Agent context note: Exposes authenticated reads, one-batch older-history requests, exact-E.164 destination resolution, fixed-host retained media, and outbound socket operations. Tests: test/core-session-client.test.mjs and test/history-fetcher.test.mjs. Pairing status comes only from decrypted auth state; never honor message-supplied download hosts, auto-page history, or bypass staged sends; update this note after meaningful changes.
+// Agent context note: Exposes authenticated reads, app-state refresh, one-batch older history, exact-E.164 resolution, fixed-host media, and server-acknowledged sends. Tests: test/core-session-client.test.mjs, test/history-fetcher.test.mjs, and test/outbound-acknowledgement.test.mjs. Pairing status comes only from decrypted auth state; never trust local send IDs as acknowledgements, auto-page history, or bypass staged sends; update this note after meaningful changes.
 import {
   downloadContentFromMessage,
+  generateMessageIDV2,
   type DownloadableMessage,
   type MediaType,
   type WAMessage,
@@ -22,6 +23,7 @@ import {
   type FetchOlderMessagesInput,
   type FetchOlderMessagesResult,
 } from "./historyFetcher.js";
+import { sendAwaitingAcknowledgement } from "./outboundAcknowledgement.js";
 
 export interface ClientStatus {
   paired: boolean;
@@ -55,11 +57,15 @@ export interface ResolvedDestination {
 
 export type DestinationInput = { chatId: string; e164?: never } | { e164: string; chatId?: never };
 
-export interface OutboundResult {
+export type OutboundResult = {
   sourceId: string;
   timestamp?: string;
   syncCompleteness: SyncCompleteness;
-}
+} & (
+  | { outcome: "accepted" }
+  | { outcome: "rejected"; errorCode: string }
+  | { outcome: "uncertain" }
+);
 
 export interface RetainedMediaDescriptor {
   messageId: string;
@@ -134,6 +140,12 @@ export class WhatsAppClient {
   fetchOlderMessages(input: FetchOlderMessagesInput): Promise<FetchOlderMessagesResult> {
     this.requirePaired();
     return this.history.fetch(input);
+  }
+
+  async resyncMessages(): Promise<SyncCompleteness> {
+    this.requirePaired();
+    const result = await this.sessions.run((socket) => socket.resyncAppState());
+    return result.syncCompleteness;
   }
 
   async searchMessages(input: Parameters<MessageStore["searchMessages"]>[0]): Promise<SyncedPage<StoredMessage>> {
@@ -221,6 +233,7 @@ export class WhatsAppClient {
     destination: ResolvedDestination,
     content: unknown,
     replyToMessageId?: string,
+    bindTransportMessage?: (messageId: string) => Promise<void>,
   ): Promise<OutboundResult> {
     this.requirePaired();
     const quoted = replyToMessageId ? this.messages.getRetainedMessage(replyToMessageId) : undefined;
@@ -246,22 +259,39 @@ export class WhatsAppClient {
       }
       transportJid = quoted.transportChatJid;
     }
-    const result = await this.sessions.run((socket) =>
-      socket.sendMessage(
-        transportJid,
-        content,
-        quoted ? { quoted: quoted.raw } : undefined,
-      ),
-    );
-    const sent = result.value;
-    if (!sent?.key.id) {
-      throw new SafeWhatsAppError("WhatsApp did not acknowledge the message.", "send_uncertain");
+    let sourceId: string | undefined;
+    let transportStarted = false;
+    try {
+      const result = await this.sessions.run(async (socket) => {
+        sourceId = generateMessageIDV2(socket.user?.id);
+        await bindTransportMessage?.(sourceId);
+        transportStarted = true;
+        return sendAwaitingAcknowledgement(socket, {
+          jid: transportJid,
+          content,
+          messageId: sourceId,
+          timeoutMs: this.config.syncTimeoutMs,
+          ...(quoted ? { quoted: quoted.raw } : {}),
+        });
+      });
+      const attempt = result.value;
+      return {
+        sourceId: attempt.messageId,
+        outcome: attempt.outcome,
+        ...(attempt.outcome === "rejected" ? { errorCode: attempt.errorCode } : {}),
+        ...(messageTimestamp(attempt.message)
+          ? { timestamp: new Date(messageTimestamp(attempt.message)!).toISOString() }
+          : {}),
+        syncCompleteness: result.syncCompleteness,
+      } as OutboundResult;
+    } catch (error) {
+      if (!sourceId || !transportStarted) throw error;
+      return {
+        sourceId,
+        outcome: "uncertain",
+        syncCompleteness: this.sessions.snapshot().syncCompleteness ?? "partial",
+      };
     }
-    return {
-      sourceId: sent.key.id,
-      ...(messageTimestamp(sent) ? { timestamp: new Date(messageTimestamp(sent)!).toISOString() } : {}),
-      syncCompleteness: result.syncCompleteness,
-    };
   }
 
   assertReplyTarget(chatId: string, messageId: string): void {
@@ -355,7 +385,8 @@ async function* boundedStream(
   }
 }
 
-function messageTimestamp(message: WAMessage): number | undefined {
+function messageTimestamp(message: WAMessage | undefined): number | undefined {
+  if (!message) return undefined;
   const value = message.messageTimestamp;
   if (value === undefined || value === null) return undefined;
   const number = typeof value === "object" && "toNumber" in value ? value.toNumber() : Number(value);

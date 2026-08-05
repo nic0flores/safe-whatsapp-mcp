@@ -59,7 +59,7 @@ test("reviewed text sends exact final edits with the reviewed preview and explic
   });
 
   assert.equal(context.sender.text.length, 1);
-  assert.deepEqual(context.sender.text[0], [
+  assert.deepEqual(context.sender.text[0].slice(0, 4), [
     {
       chatId: "chat-1",
       transportJid: "chat-1@g.us",
@@ -353,7 +353,7 @@ test("a rejected send releases the queue without retrying its transport", async 
   assert.deepEqual(results[1].value, { state: "sent", whatsappMessageId: "wa-2" });
   assert.equal(context.sender.text.length, 2);
   assert.equal(context.sender.maxActiveText, 1);
-  assert.equal((await context.store.get(first.pendingId)).state, "uncertain");
+  assert.equal((await context.store.get(first.pendingId)).state, "failed");
   assert.equal((await context.store.get(second.pendingId)).state, "sent");
 });
 
@@ -367,6 +367,49 @@ test("a transport failure becomes uncertain and is never retried", async () => {
   assert.equal(listed.sends.length, 1);
   await assert.rejects(() => context.service.sendPrepared(prepared), /state is 'uncertain'/i);
   assert.equal(context.sender.text.length, 1);
+});
+
+test("a late exact-ID rejection waits for the active send and then dominates acceptance", async () => {
+  let release;
+  let started;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const didStart = new Promise((resolve) => { started = resolve; });
+  const context = await makeContext({ gate, onTextStart: started });
+  const prepared = await context.service.prepareText({ chatId: "chat-1", text: "race" });
+  const sending = context.service.sendPrepared(prepared);
+  await didStart;
+  const rejection = context.service.reconcileTransportFailure("wa-1", "whatsapp_rejected_463");
+  release();
+  assert.deepEqual(await sending, { state: "sent", whatsappMessageId: "wa-1" });
+  assert.equal(await rejection, prepared.pendingId);
+  const terminal = await context.store.get(prepared.pendingId);
+  assert.equal(terminal.state, "failed");
+  assert.equal(terminal.errorCode, "whatsapp_rejected_463");
+  assert.equal(context.sender.text.length, 1);
+});
+
+test("local terminal-write failures never relabel known WhatsApp outcomes", async () => {
+  for (const scenario of [
+    { options: {}, expected: "sent" },
+    { options: { failTransportAt: 1 }, expected: "send_rejected" },
+    { options: { uncertainTransportAt: 1 }, expected: "send_uncertain" },
+  ]) {
+    const context = await makeContext(scenario.options);
+    const prepared = await context.service.prepareText({ chatId: "chat-1", text: scenario.expected });
+    context.store.finish = async () => { throw new Error("local disk failure"); };
+    if (scenario.expected === "sent") {
+      assert.deepEqual(await context.service.sendPrepared(prepared), {
+        state: "sent",
+        whatsappMessageId: "wa-1",
+      });
+    } else {
+      await assert.rejects(
+        context.service.sendPrepared(prepared),
+        (error) => error.code === scenario.expected,
+      );
+    }
+    assert.equal(context.sender.text.length, 1);
+  }
 });
 
 test("expired sends and disabled sends never reach the transport", async () => {
@@ -725,6 +768,7 @@ class FakeSender {
 
   async sendText(...args) {
     const callNumber = this.text.push(args);
+    await args[4]?.(`wa-${callNumber}`);
     this.activeText += 1;
     this.maxActiveText = Math.max(this.maxActiveText, this.activeText);
     this.options.onTextStart?.(callNumber);
@@ -733,19 +777,20 @@ class FakeSender {
       if (this.options.textGates?.[callNumber - 1]) {
         await this.options.textGates[callNumber - 1];
       }
-      if (this.options.failTransport || this.options.failTransportAt === callNumber) {
-        throw new Error("network details must not escape");
-      }
-      return { messageId: `wa-${callNumber}` };
+      if (this.options.failTransportAt === callNumber) return { outcome: "rejected", messageId: `wa-${callNumber}`, errorCode: "whatsapp_rejected_463" };
+      if (this.options.uncertainTransportAt === callNumber) return { outcome: "uncertain", messageId: `wa-${callNumber}` };
+      if (this.options.failTransport) throw new Error("network details must not escape");
+      return { outcome: "accepted", messageId: `wa-${callNumber}` };
     } finally {
       this.activeText -= 1;
     }
   }
 
   async sendMedia(...args) {
-    this.media.push(args);
+    const callNumber = this.media.push(args);
+    await args[4]?.(`wa-media-${callNumber}`);
     if (this.options.failTransport) throw new Error("network details must not escape");
-    return { messageId: `wa-media-${this.media.length}` };
+    return { outcome: "accepted", messageId: `wa-media-${callNumber}` };
   }
 }
 

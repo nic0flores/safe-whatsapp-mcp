@@ -18,15 +18,15 @@ class Events {
 
 class FakeSocket {
   events = new Events();
-  ended = 0;
-  loggedOut = 0;
-  sent = [];
+  ended = 0; loggedOut = 0; resyncs = 0; sent = [];
   end() { this.ended += 1; }
   async logout() { this.loggedOut += 1; }
   async onWhatsApp(number) { return [{ exists: true, jid: `${number}@s.whatsapp.net` }]; }
+  async resyncAppState() { this.resyncs += 1; }
+  async waitForMessage(id) { return { tag: "ack", attrs: { id, class: "message" } }; }
   async sendMessage(jid, content, options) {
     this.sent.push({ jid, content, options });
-    return { key: { id: "sent-id", remoteJid: jid, fromMe: true }, messageTimestamp: 1_700_000_000 };
+    return { key: { id: options.messageId, remoteJid: jid, fromMe: true }, messageTimestamp: 1_700_000_000 };
   }
   getMessage() { return undefined; }
 }
@@ -437,6 +437,8 @@ test("MCP-facing client reads fail immediately before pairing and direct sends r
     assert.equal(connects, 0);
 
     await auth.saveCreds({ registered: true });
+    assert.equal(await client.resyncMessages(), "complete");
+    assert.equal(socket.resyncs, 1);
     messages.ingestUpsert({ messages: [directMessage({ id: "one" })], type: "append" });
     const direct = messages.listChats().items[0];
     await assert.rejects(
@@ -446,7 +448,7 @@ test("MCP-facing client reads fail immediately before pairing and direct sends r
     const destination = await client.resolveDestination({ e164: "+919999999999" });
     assert.equal(destination.transportJid, "919999999999@s.whatsapp.net");
     const sent = await client.sendMessage(destination, { text: "hello" });
-    assert.equal(sent.sourceId, "sent-id");
+    assert.deepEqual([sent.outcome, sent.sourceId], ["accepted", socket.sent[0].options.messageId]);
     assert.equal(socket.sent[0].jid, "919999999999@s.whatsapp.net");
 
     socket.onWhatsApp = async () => [{ exists: true, jid: "918888888888@s.whatsapp.net" }];
@@ -462,6 +464,55 @@ test("MCP-facing client reads fail immediately before pairing and direct sends r
       client.resolveDestination({ e164: "+919999999999" }),
       (error) => error.code === "destination_verification_failed",
     );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("accepted, rejected, and uncertain sends enter history only through WhatsApp events", async () => {
+  const fixture = await temporaryState();
+  try {
+    const auth = await SqliteAuthState.open(fixture.state, fixture.masterKeyStore);
+    await auth.saveCreds({ registered: true });
+    const messages = new MessageStore(fixture.state, new IdentityStore(fixture.state), runtimeConfig);
+    const socket = new FakeSocket();
+    const sessions = {
+      snapshot: () => ({ connected: true, connecting: false, syncCompleteness: "complete" }),
+      run: async (operation) => ({ value: await operation(socket), syncCompleteness: "complete" }),
+      disconnect: async () => undefined,
+      unlink: async () => undefined,
+    };
+    const client = new WhatsAppClient(
+      fixture.state,
+      messages,
+      sessions,
+      { ...runtimeConfig, syncTimeoutMs: 5 },
+      undefined,
+      () => auth.isPaired(),
+    );
+    const destination = {
+      chatId: "direct-chat",
+      transportJid: "919999999999@s.whatsapp.net",
+      kind: "direct",
+      e164: "+919999999999",
+    };
+
+    const accepted = await client.sendMessage(destination, { text: "accepted" });
+    socket.waitForMessage = async (id) => ({
+      tag: "ack",
+      attrs: { id, class: "message", error: "463" },
+    });
+    assert.equal((await client.sendMessage(destination, { text: "rejected" })).outcome, "rejected");
+    socket.waitForMessage = async () => undefined;
+    assert.equal((await client.sendMessage(destination, { text: "uncertain" })).outcome, "uncertain");
+    assert.equal(fixture.state.counts().messages, 0);
+
+    messages.ingestUpsert({
+      type: "notify",
+      messages: [directMessage({ id: accepted.sourceId, fromMe: true, text: "accepted" })],
+    });
+    assert.equal(fixture.state.counts().messages, 1);
+    assert.equal(messages.listChats().items[0].latestSnippet, "accepted");
   } finally {
     await fixture.cleanup();
   }

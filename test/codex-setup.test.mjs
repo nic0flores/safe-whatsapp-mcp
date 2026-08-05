@@ -154,6 +154,26 @@ setupCodexTest("media opt-in is blocked when human-routed approvals are unavaila
   }
 });
 
+setupCodexTest("rerunning setup upgrades an older exact tool allowlist without changing send gates", async () => {
+  const fixture = await setupFixture();
+  try {
+    const options = fixture.options({ enableSend: true, enableMediaSend: true });
+    await setupCodex(options);
+    fixture.server().enabled_tools = fixture.server().enabled_tools.filter(
+      (name) => name !== "resync_whatsapp_messages",
+    );
+    fixture.client.syncEffective();
+
+    const upgraded = await setupCodex(options);
+    assert.equal(upgraded.changed, true);
+    assert.deepEqual(fixture.server().enabled_tools, [...WHATSAPP_TOOL_NAMES]);
+    assert.equal(fixture.server().env[SEND_ENABLED_ENV], "true");
+    assert.equal(fixture.server().env[MEDIA_SEND_ENABLED_ENV], "true");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 setupCodexTest("compatible entries preserve stricter and unrelated server settings", async () => {
   const fixture = await setupFixture();
   try {

@@ -18,6 +18,7 @@ enabled_tools = [
   "list_whatsapp_chats",
   "read_whatsapp_chat",
   "fetch_older_whatsapp_messages",
+  "resync_whatsapp_messages",
   "search_whatsapp_messages",
   "get_whatsapp_media",
   "list_whatsapp_sends",
