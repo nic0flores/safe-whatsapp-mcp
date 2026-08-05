@@ -1,6 +1,6 @@
 {
   "name": "safe-whatsapp-mcp",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Local MCP server for reading a personal WhatsApp linked device and sending through an editable private browser review.",
   "type": "module",
   "bin": {

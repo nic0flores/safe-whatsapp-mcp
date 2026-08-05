@@ -2,7 +2,7 @@
 export const PACKAGE_NAME = "safe-whatsapp-mcp";
 export const CLI_NAME = "safewhatsapp";
 export const APP_NAME = "Safe WhatsApp MCP";
-export const VERSION = "0.2.2";
+export const VERSION = "0.2.3";
 
 export const SEND_ENABLED_ENV = "SAFE_WHATSAPP_MCP_ENABLE_SEND";
 export const MEDIA_SEND_ENABLED_ENV = "SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND";

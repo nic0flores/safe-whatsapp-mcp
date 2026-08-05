@@ -27,7 +27,6 @@ import type {
   WhatsAppReviewOperations,
 } from "./types.js";
 
-const DEFAULT_MAX_REVIEWS = 5;
 const DEFAULT_TERMINAL_RETENTION_MS = 60_000;
 const MAX_PREVIEW_ATTEMPTS = 5;
 
@@ -54,7 +53,6 @@ export interface SendReviewManagerOptions {
   mediaSendEnabled: boolean;
   maxMediaBytes: number;
   ttlMs: number;
-  maxReviews?: number;
   terminalRetentionMs?: number;
   now?: () => Date;
   openBrowser?: (url: string) => Promise<boolean>;
@@ -69,7 +67,6 @@ export class SendReviewManager implements WhatsAppReviewOperations, ReviewHttpDe
   private readonly now: () => Date;
   private readonly openBrowser: (url: string) => Promise<boolean>;
   private readonly fetchPreview: (url: string) => Promise<LinkPreviewCard>;
-  private readonly maxReviews: number;
   private readonly terminalRetentionMs: number;
   private readonly fromLabel: string;
   private inFlightOpens = 0;
@@ -80,7 +77,6 @@ export class SendReviewManager implements WhatsAppReviewOperations, ReviewHttpDe
     this.now = options.now ?? (() => new Date());
     this.openBrowser = options.openBrowser ?? openLocalBrowser;
     this.fetchPreview = options.fetchPreview ?? fetchLinkPreview;
-    this.maxReviews = options.maxReviews ?? DEFAULT_MAX_REVIEWS;
     this.terminalRetentionMs = options.terminalRetentionMs ?? DEFAULT_TERMINAL_RETENTION_MS;
     this.fromLabel = options.fromLabel ?? "Your linked personal WhatsApp";
     this.server = new ReviewHttpServer(this, options.maxMediaBytes);
@@ -105,13 +101,6 @@ export class SendReviewManager implements WhatsAppReviewOperations, ReviewHttpDe
         "media_send_disabled",
       );
     }
-    if (this.sessionsById.size + this.inFlightOpens >= this.maxReviews) {
-      throw new SafeWhatsAppError(
-        "Too many WhatsApp reviews are already open. Finish or cancel one and retry.",
-        "review_limit_reached",
-      );
-    }
-
     this.inFlightOpens += 1;
     try {
       const id = randomUUID();

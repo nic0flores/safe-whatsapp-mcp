@@ -85,27 +85,23 @@ test("reply reviews show an escaped local message summary and reject a target fr
   }
 });
 
-test("concurrent opens reserve the review cap and share one fully initialized server", async () => {
+test("concurrent opens have no session cap and share one fully initialized server", async () => {
   const groupsStarted = deferred();
   const releaseGroups = deferred();
   let starts = 0;
   const context = makeContext({
-    maxReviews: 2,
     groupsGate: releaseGroups.promise,
-    onGroupsStarted: () => { starts += 1; if (starts === 2) groupsStarted.resolve(); },
+    onGroupsStarted: () => { starts += 1; if (starts === 6) groupsStarted.resolve(); },
   });
-  const first = context.manager.open({ kind: "text", e164: TEST_RECIPIENT_E164, text: "one" });
-  const second = context.manager.open({ kind: "text", e164: "+919999999999", text: "two" });
+  const opens = Array.from({ length: 6 }, (_, index) => context.manager.open({
+    kind: "text", e164: TEST_RECIPIENT_E164, text: `draft ${index}`,
+  }));
   await groupsStarted.promise;
-  await assert.rejects(
-    context.manager.open({ kind: "text", e164: "+918888888888", text: "three" }),
-    (error) => error.code === "review_limit_reached",
-  );
   releaseGroups.resolve();
   try {
-    await Promise.all([first, second]);
-    assert.equal(context.manager.sessionCount, 2);
-    assert.equal(context.browserUrls.length, 2);
+    await Promise.all(opens);
+    assert.equal(context.manager.sessionCount, 6);
+    assert.equal(context.browserUrls.length, 6);
     assert.equal(new Set(context.browserUrls.map((url) => new URL(url).origin)).size, 1);
   } finally {
     await context.manager.close();
@@ -552,7 +548,6 @@ function makeContext(overrides = {}) {
     maxMediaBytes: 25 * 1024 * 1024,
     ttlMs: overrides.ttlMs ?? 10 * 60_000,
     terminalRetentionMs: overrides.terminalRetentionMs ?? 5_000,
-    maxReviews: overrides.maxReviews,
     now: overrides.now,
     openBrowser: async (url) => {
       browserUrl = url;

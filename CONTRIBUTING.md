@@ -56,7 +56,7 @@ Changes must preserve these boundaries:
 - A pairing QR stays on the tokenized IPv4-loopback browser flow and never enters MCP output, logs, files, command arguments, or a remote service.
 - Broker admission remains authenticated and bound only to `127.0.0.1`; its short-lived capability never enters stdout, logs, command arguments, or environment variables.
 - A broker accepts only proxies with the exact package version, full configuration fingerprint, and text/media send policy. Policy mismatches fail closed.
-- A browser review keeps the broker alive after its MCP proxy detaches, is capped and short-lived, and releases every route/action capability and temporary snapshot on terminal cleanup.
+- A browser review keeps the broker alive after its MCP proxy detaches, is short-lived, and releases every route/action capability and temporary snapshot on terminal cleanup.
 - Review secrets never enter MCP output, stdout, logs, audit data, broker descriptors, command arguments, or environment variables.
 - Browser mutations require loopback, exact host/origin, and the separate action token; the page renders all untrusted data through DOM text/value properties.
 - Link previews must require an explicit human click after the hostname/public-IP disclosure and preserve public-address DNS validation, address pinning, redirect revalidation, strict byte/time caps, and local raster sanitization.

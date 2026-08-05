@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## 0.2.3 - 2026-08-05
+
+### Changed
+
+- Removed the simultaneous send-review limit. Each review remains independently expiring and single-use.
+
 ## 0.2.2 - 2026-08-05
 
 ### Added
