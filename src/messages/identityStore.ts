@@ -1,7 +1,8 @@
-// Agent context note: Maintains opaque people plus canonical bounded machine-derived PN/LID aliases. Tests: test/core-identity-messages.test.mjs. Never infer identity from display names, message text, or malformed phone JIDs; update this note after meaningful changes.
+// Agent context note: Maintains opaque people plus canonical bounded machine-derived PN/LID aliases. In hardened production, display names are encrypted before SQLite. Tests: test/core-identity-messages.test.mjs. Never infer identity from display names, message text, or malformed phone JIDs; update this note after meaningful changes.
 import { randomUUID } from "node:crypto";
 import type { SqliteState } from "../storage/database.js";
 import { SafeWhatsAppError } from "../errors.js";
+import type { CacheVault } from "../security/cacheVault.js";
 
 export type IdentityAliasKind = "pn" | "lid";
 
@@ -20,7 +21,10 @@ export interface ObservedIdentity {
 }
 
 export class IdentityStore {
-  constructor(private readonly state: SqliteState) {}
+  constructor(
+    private readonly state: SqliteState,
+    private readonly cacheVault?: CacheVault,
+  ) {}
 
   observe(input: ObservedIdentity): IdentityRecord {
     const aliases = [normalizeUserJid(input.jid)];
@@ -48,6 +52,7 @@ export class IdentityStore {
     }
     const id = e164Owner ?? [...ids].sort()[0] ?? randomUUID();
     const now = Date.now();
+    const displayName = this.encryptDisplayName(id, cleanName(input.displayName));
     this.state.db.transaction(() => {
       this.state.db.prepare(`
         INSERT INTO identities (id, e164, display_name, created_at, updated_at)
@@ -56,7 +61,7 @@ export class IdentityStore {
           e164 = COALESCE(excluded.e164, identities.e164),
           display_name = COALESCE(excluded.display_name, identities.display_name),
           updated_at = excluded.updated_at
-      `).run(id, e164 ?? null, cleanName(input.displayName), now, now);
+      `).run(id, e164 ?? null, displayName, now, now);
       for (const duplicate of ids) {
         if (duplicate !== id) this.merge(duplicate, id);
       }
@@ -91,10 +96,11 @@ export class IdentityStore {
     const aliases = this.state.db
       .prepare("SELECT jid, kind FROM identity_aliases WHERE identity_id = ? ORDER BY kind, jid")
       .all(id) as { jid: string; kind: IdentityAliasKind }[];
+    const displayName = this.decryptDisplayName(row.id, row.display_name);
     return {
       id: row.id,
       ...(row.e164 ? { e164: row.e164 } : {}),
-      ...(row.display_name ? { displayName: row.display_name } : {}),
+      ...(displayName ? { displayName } : {}),
       aliases,
     };
   }
@@ -118,17 +124,31 @@ export class IdentityStore {
       .prepare("SELECT e164, display_name FROM identities WHERE id = ?")
       .get(fromId) as { e164: string | null; display_name: string | null } | undefined;
     if (!source) return;
+    const sourceName = this.decryptDisplayName(fromId, source.display_name);
+    const targetCiphertext = this.encryptDisplayName(toId, sourceName);
     this.state.db.prepare(`
       UPDATE identities SET
         e164 = COALESCE(e164, ?),
         display_name = COALESCE(display_name, ?),
         updated_at = ?
       WHERE id = ?
-    `).run(source.e164, source.display_name, Date.now(), toId);
+    `).run(source.e164, targetCiphertext, Date.now(), toId);
     this.state.db.prepare("UPDATE identity_aliases SET identity_id = ? WHERE identity_id = ?").run(toId, fromId);
     this.state.db.prepare("UPDATE chats SET identity_id = ? WHERE identity_id = ?").run(toId, fromId);
     this.state.db.prepare("UPDATE messages SET sender_identity_id = ? WHERE sender_identity_id = ?").run(toId, fromId);
     this.state.db.prepare("DELETE FROM identities WHERE id = ?").run(fromId);
+  }
+
+  private encryptDisplayName(id: string, value: string | null): string | null {
+    return value && this.cacheVault
+      ? this.cacheVault.encrypt("identity_display_name", id, value)
+      : value;
+  }
+
+  private decryptDisplayName(id: string, value: string | null): string | null {
+    return value && this.cacheVault
+      ? this.cacheVault.decrypt("identity_display_name", id, value)
+      : value;
   }
 }
 
