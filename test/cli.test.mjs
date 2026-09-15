@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 const execFile = promisify(execFileCallback);
 const cli = path.resolve("dist/cli.js");
 
-test("CLI exposes help/version and has an executable generated shebang", async () => {
+test("CLI exposes hardened read-only help/version and has an executable generated shebang", async () => {
   const source = await fs.readFile(cli, "utf8");
   assert.equal(source.startsWith("#!/usr/bin/env node\n"), true);
   assert.equal(source.includes("Baileys credentials and Signal-key values"), false);
@@ -27,7 +27,10 @@ test("CLI exposes help/version and has an executable generated shebang", async (
   const help = await execFile(process.execPath, [cli, "--help"]);
   assert.match(help.stdout, /^safewhatsapp 0\.2\.3/mu);
   assert.match(help.stdout, /serve/u);
-  assert.match(help.stdout, /setup-codex \[--enable-send\] \[--enable-media-send\]/u);
+  assert.match(help.stdout, /setup-codex/u);
+  assert.match(help.stdout, /read-only/u);
+  assert.doesNotMatch(help.stdout, /enable-send/u);
+  assert.doesNotMatch(help.stdout, /enable-media-send/u);
   assert.match(help.stdout, /disconnect/u);
   assert.match(help.stdout, /LOCAL-ONLY purge/u);
   assert.match(help.stdout, /clear account state/u);
@@ -41,33 +44,12 @@ test("CLI exposes help/version and has an executable generated shebang", async (
       return true;
     },
   );
-  await assert.rejects(
-    execFile(process.execPath, [cli, "setup-codex", "--enable-media-send"]),
-    (error) => {
-      assert.match(error.stderr, /setup-codex \[--enable-send\] \[--enable-media-send\]/u);
-      assert.match(error.stderr, /invalid_arguments/u);
-      return true;
-    },
-  );
-  await assert.rejects(
-    execFile(process.execPath, [cli, "setup-codex", "--enable-send", "--enable-send"]),
-    (error) => {
-      assert.match(error.stderr, /invalid_arguments/u);
-      return true;
-    },
-  );
-  const sourceEnvironment = { ...process.env };
-  delete sourceEnvironment.SAFE_WHATSAPP_MCP_STANDALONE_EXECUTABLE;
-  delete sourceEnvironment.SAFE_WHATSAPP_MCP_STANDALONE_BUNDLE;
-  for (const flags of [
-    ["--enable-send", "--enable-media-send"],
-    ["--enable-media-send", "--enable-send"],
-  ]) {
+  for (const flag of ["--enable-send", "--enable-media-send"]) {
     await assert.rejects(
-      execFile(process.execPath, [cli, "setup-codex", ...flags], { env: sourceEnvironment }),
+      execFile(process.execPath, [cli, "setup-codex", flag]),
       (error) => {
-        assert.match(error.stderr, /installed_package_required/u);
-        assert.doesNotMatch(error.stderr, /invalid_arguments/u);
+        assert.match(error.stderr, /Usage: safewhatsapp setup-codex/u);
+        assert.match(error.stderr, /invalid_arguments/u);
         return true;
       },
     );
@@ -89,15 +71,20 @@ test("disconnect runs directly without an interactive confirmation", async () =>
   }
 });
 
-test("Codex setup refuses a source checkout instead of registering mutable source", async () => {
+test("Codex setup refuses unsupported Windows or a mutable source checkout", async () => {
   const env = { ...process.env };
   delete env.SAFE_WHATSAPP_MCP_STANDALONE_EXECUTABLE;
   delete env.SAFE_WHATSAPP_MCP_STANDALONE_BUNDLE;
   await assert.rejects(
     execFile(process.execPath, [cli, "setup-codex"], { env }),
     (error) => {
-      assert.match(error.stderr, /installed from npm or as a reviewed standalone bundle/u);
-      assert.match(error.stderr, /installed_package_required/u);
+      if (process.platform === "win32") {
+        assert.match(error.stderr, /unsupported_platform/u);
+        assert.match(error.stderr, /macOS and Linux/u);
+      } else {
+        assert.match(error.stderr, /installed from npm or as a reviewed standalone bundle/u);
+        assert.match(error.stderr, /installed_package_required/u);
+      }
       return true;
     },
   );
