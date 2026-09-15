@@ -1,4 +1,4 @@
-// Agent context note: Fail-closed ingress/read facade for the hardened read-only fork. It filters before SQLite and, when a cache vault is present, encrypts human content before MessageStore sees it. Groups, unresolved/unauthorized LIDs, media locators, and global search are denied.
+// Agent context note: Fail-closed ingress/read facade for the hardened read-only fork. It filters before SQLite and, when a cache vault is present, encrypts bounded human content before MessageStore sees it. Groups, unresolved/unauthorized LIDs, media locators, and global search are denied.
 import type {
   Chat,
   ChatUpdate,
@@ -25,12 +25,14 @@ import {
 import {
   isGroupJid,
   isPhoneJid,
+  isSafeMessageId,
   isUserJid,
-  normalizeChatJid,
 } from "../messages/messageStoreHelpers.js";
 import type { SqliteState } from "../storage/database.js";
 import { DirectChatAllowlist } from "./chatAllowlist.js";
 import type { CacheVault } from "./cacheVault.js";
+
+const MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES = 47_000;
 
 export class HardenedMessageStore extends MessageStore {
   private readonly allowedAliases = new Map<string, string>();
@@ -98,14 +100,13 @@ export class HardenedMessageStore extends MessageStore {
 
   override upsertChats(chats: (Chat | ChatUpdate)[]): void {
     const allowed = chats.filter((chat) => this.chatAllowed(chat.id)).map((chat) => {
-      if (!this.cacheVault || !chat.id || !isUserJid(chat.id)) return chat;
+      if (!chat.id || !isUserJid(chat.id)) return chat;
       const record = chat as Chat & { name?: string | null };
       const name = record.name?.trim();
-      if (!name) return chat;
-      return {
-        ...chat,
-        name: this.cacheVault.encrypt("chat_title", normalizeChatJid(chat.id), name.slice(0, 256)),
-      } as Chat | ChatUpdate;
+      if (name) this.identities.observe({ jid: chat.id, displayName: name });
+      // Direct-chat titles are represented by the encrypted identity display
+      // name instead of duplicating human-readable names in chats.title.
+      return { ...chat, name: undefined } as Chat | ChatUpdate;
     });
     super.upsertChats(allowed);
   }
@@ -129,27 +130,23 @@ export class HardenedMessageStore extends MessageStore {
     return {
       ...result,
       items: result.items.map((chat) => {
-        const resolved = super.resolveChat(chat.chatId);
-        if (!resolved) return { ...chat, latestSnippet: undefined };
+        const identity = chat.e164 ? this.identities.findByE164(chat.e164) : undefined;
+        const latest = super.readChat({ chatId: chat.chatId, limit: 1 }).items[0];
+        const decoded = latest ? this.unprotectStored(latest) : undefined;
+        const { title: _cipherTitle, latestSnippet: _cipherSnippet, ...safe } = chat;
         return {
-          ...chat,
-          ...(chat.title
-            ? { title: this.cacheVault!.decrypt("chat_title", resolved.transportJid, chat.title) }
-            : {}),
-          ...(chat.latestSnippet
-            ? { latestSnippet: this.cacheVault!.decrypt("message_text", resolved.transportJid, chat.latestSnippet) }
-            : {}),
+          ...safe,
+          ...(identity?.displayName ? { title: identity.displayName } : {}),
+          ...(decoded?.text ? { latestSnippet: decoded.text } : {}),
         };
       }),
     };
   }
 
   override readChat(input: { chatId: string; limit?: number; cursor?: string }): Page<StoredMessage> {
-    const resolved = super.resolveChat(input.chatId);
-    if (!resolved) throw new SafeWhatsAppError("WhatsApp chat was not found.", "chat_not_found");
     const result = super.readChat(input);
     return this.cacheVault
-      ? { ...result, items: result.items.map((message) => this.unprotectStored(message, resolved.transportJid)) }
+      ? { ...result, items: result.items.map((message) => this.unprotectStored(message)) }
       : result;
   }
 
@@ -168,33 +165,31 @@ export class HardenedMessageStore extends MessageStore {
         "chat_scope_required",
       );
     }
-    const resolved = super.resolveChat(input.chatId);
-    if (!resolved) throw new SafeWhatsAppError("WhatsApp chat was not found.", "chat_not_found");
+    if (!super.resolveChat(input.chatId)) {
+      throw new SafeWhatsAppError("WhatsApp chat was not found.", "chat_not_found");
+    }
 
+    const needle = query.toLocaleLowerCase();
     const matches: StoredMessage[] = [];
-    let cursor: string | undefined;
+    let scanCursor: string | undefined;
     do {
-      const batch = super.readChat({ chatId: input.chatId, limit: 200, cursor });
+      const batch = super.readChat({ chatId: input.chatId, limit: 200, cursor: scanCursor });
       for (const stored of batch.items) {
-        const message = this.unprotectStored(stored, resolved.transportJid);
-        if (message.text?.toLocaleLowerCase().includes(query.toLocaleLowerCase())) matches.push(message);
+        const message = this.unprotectStored(stored);
+        if (message.text?.toLocaleLowerCase().includes(needle)) matches.push(message);
       }
-      cursor = batch.nextCursor;
-    } while (cursor);
+      scanCursor = batch.nextCursor;
+    } while (scanCursor);
 
     const limit = pageSize(input.limit);
     const offset = decodeCursor(input.cursor);
-    const window = matches.slice(offset, offset + limit + 1);
-    return page(window, limit, offset, (message) => message);
+    return page(matches.slice(offset, offset + limit + 1), limit, offset, (message) => message);
   }
 
   override getRetainedMessage(messageId: string): RetainedMessage | undefined {
     const retained = super.getRetainedMessage(messageId);
     if (!retained || !this.cacheVault) return retained;
-    return {
-      ...retained,
-      message: this.unprotectStored(retained.message, retained.transportChatJid),
-    };
+    return { ...retained, message: this.unprotectStored(retained.message) };
   }
 
   override retainedMediaMessageIds(): string[] {
@@ -211,10 +206,12 @@ export class HardenedMessageStore extends MessageStore {
     e164?: string;
   } | undefined {
     const resolved = super.resolveChat(chatId);
-    if (!resolved || !this.cacheVault || !resolved.title) return resolved;
+    if (!resolved) return undefined;
+    const identity = resolved.e164 ? this.identities.findByE164(resolved.e164) : undefined;
+    const { title: _persistedTitle, ...safe } = resolved;
     return {
-      ...resolved,
-      title: this.cacheVault.decrypt("chat_title", resolved.transportJid, resolved.title),
+      ...safe,
+      ...(identity?.displayName ? { title: identity.displayName } : {}),
     };
   }
 
@@ -285,29 +282,27 @@ export class HardenedMessageStore extends MessageStore {
   }
 
   private protectMessage(message: WAMessage): WAMessage {
-    if (!this.cacheVault || !message.key.remoteJid || !isUserJid(message.key.remoteJid) || !message.message) {
-      return message;
-    }
-    const chatJid = normalizeChatJid(message.key.remoteJid);
+    const sourceId = message.key.id;
+    if (!this.cacheVault || !isSafeMessageId(sourceId) || !message.message) return message;
     return {
       ...message,
-      message: this.protectContent(message.message, chatJid),
+      message: this.protectContent(message.message, sourceId),
     } as WAMessage;
   }
 
   private protectUpdate(update: WAMessageUpdate): WAMessageUpdate {
-    if (!this.cacheVault || !update.key.remoteJid || !isUserJid(update.key.remoteJid) ||
-        !update.update.message) return update;
+    const sourceId = update.key.id;
+    if (!this.cacheVault || !isSafeMessageId(sourceId) || !update.update.message) return update;
     return {
       ...update,
       update: {
         ...update.update,
-        message: this.protectContent(update.update.message, normalizeChatJid(update.key.remoteJid)),
+        message: this.protectContent(update.update.message, sourceId),
       },
     } as WAMessageUpdate;
   }
 
-  private protectContent<T extends Record<string, any>>(content: T, chatJid: string): T {
+  private protectContent<T extends Record<string, any>>(content: T, sourceId: string): T {
     if (!this.cacheVault) return content;
     const clone: Record<string, any> = { ...content };
 
@@ -321,7 +316,7 @@ export class HardenedMessageStore extends MessageStore {
     ]) {
       const node = clone[wrapper];
       if (node?.message) {
-        clone[wrapper] = { ...node, message: this.protectContent(node.message, chatJid) };
+        clone[wrapper] = { ...node, message: this.protectContent(node.message, sourceId) };
         return clone as T;
       }
     }
@@ -329,20 +324,28 @@ export class HardenedMessageStore extends MessageStore {
     if (clone.protocolMessage?.editedMessage) {
       clone.protocolMessage = {
         ...clone.protocolMessage,
-        editedMessage: this.protectContent(clone.protocolMessage.editedMessage, chatJid),
+        editedMessage: this.protectContent(clone.protocolMessage.editedMessage, sourceId),
       };
       return clone as T;
     }
 
     if (typeof clone.conversation === "string" && clone.conversation) {
-      clone.conversation = this.cacheVault.encrypt("message_text", chatJid, clone.conversation);
+      clone.conversation = this.cacheVault.encrypt(
+        "message_text",
+        sourceId,
+        boundedEncryptedText(clone.conversation),
+      );
       return clone as T;
     }
 
     if (clone.extendedTextMessage) {
       const node = { ...clone.extendedTextMessage };
       if (typeof node.text === "string" && node.text) {
-        node.text = this.cacheVault.encrypt("message_text", chatJid, node.text);
+        node.text = this.cacheVault.encrypt(
+          "message_text",
+          sourceId,
+          boundedEncryptedText(node.text),
+        );
       }
       clone.extendedTextMessage = node;
       return clone as T;
@@ -358,10 +361,18 @@ export class HardenedMessageStore extends MessageStore {
       if (!clone[property]) continue;
       const node = { ...clone[property] };
       if (typeof node.caption === "string" && node.caption) {
-        node.caption = this.cacheVault.encrypt("message_text", chatJid, node.caption);
+        node.caption = this.cacheVault.encrypt(
+          "message_text",
+          sourceId,
+          boundedEncryptedText(node.caption),
+        );
       }
       if (typeof node.fileName === "string" && node.fileName) {
-        node.fileName = this.cacheVault.encrypt("message_media_filename", chatJid, node.fileName);
+        node.fileName = this.cacheVault.encrypt(
+          "message_media_filename",
+          sourceId,
+          node.fileName.slice(0, 512),
+        );
       }
       // Hardened read-only mode never persists downloadable media capabilities.
       delete node.directPath;
@@ -374,13 +385,13 @@ export class HardenedMessageStore extends MessageStore {
     return clone as T;
   }
 
-  private unprotectStored(message: StoredMessage, transportJid: string): StoredMessage {
+  private unprotectStored(message: StoredMessage): StoredMessage {
     if (!this.cacheVault) return message;
     const text = message.text
-      ? this.cacheVault.decrypt("message_text", transportJid, message.text)
+      ? this.cacheVault.decrypt("message_text", message.sourceId, message.text)
       : undefined;
     const filename = message.media?.filename
-      ? this.cacheVault.decrypt("message_media_filename", transportJid, message.media.filename)
+      ? this.cacheVault.decrypt("message_media_filename", message.sourceId, message.media.filename)
       : undefined;
     return {
       ...message,
@@ -393,6 +404,14 @@ export class HardenedMessageStore extends MessageStore {
       } : {}),
     };
   }
+}
+
+function boundedEncryptedText(value: string): string {
+  const bytes = Buffer.from(value.replace(/\u0000/g, ""), "utf8");
+  if (bytes.byteLength <= MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES) return bytes.toString("utf8");
+  let end = MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString("utf8");
 }
 
 function chatDenied(): SafeWhatsAppError {
