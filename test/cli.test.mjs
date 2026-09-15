@@ -147,7 +147,7 @@ test("offline status is structured and purge preserves only user outbox content"
   assert.match(purged.stdout, /LOCAL-ONLY PURGE/u);
   assert.match(purged.stdout, /does not log out WhatsApp/u);
   assert.match(purged.stdout, /Linked Devices/u);
-  assert.match(purged.stdout, /OS credential-vault key/u);
+  assert.match(purged.stdout, /independent OS auth\/cache vault keys/u);
   assert.match(purged.stdout, /requested deletion/u);
   assert.equal(await fs.readFile(path.join(state, "outbox", "mine.txt"), "utf8"), "keep");
   await assert.rejects(() => fs.access(path.join(state, "config.json")), /ENOENT/u);
@@ -158,7 +158,7 @@ test("offline status is structured and purge preserves only user outbox content"
     [cli, "purge", "--yes", "--abandon-key"],
     { env },
   );
-  assert.match(abandoned.stdout, /discarded the non-secret retry descriptor/u);
+  assert.match(abandoned.stdout, /discarded non-secret retry descriptors/u);
 });
 
 test("pairing refuses a non-interactive process before producing a QR", async () => {
