@@ -5,7 +5,10 @@ import {
   rejectionErrorCode,
   sendAwaitingAcknowledgement,
 } from "../dist/whatsapp/outboundAcknowledgement.js";
-import { SAFE_OUTBOUND_SOCKET_POLICY } from "../dist/whatsapp/baileysSocketFactory.js";
+import {
+  SAFE_OUTBOUND_SOCKET_POLICY,
+  V3_COMPANION_BROWSER,
+} from "../dist/whatsapp/baileysSocketFactory.js";
 
 const input = {
   jid: "12025550123@s.whatsapp.net",
@@ -87,6 +90,10 @@ test("production socket policy disables local echoes and automatic message retri
     emitOwnEvents: false,
     enableRecentMessageCache: false,
   });
+});
+
+test("V3 uses the Baileys desktop companion profile required for richer history sync", () => {
+  assert.deepEqual(V3_COMPANION_BROWSER, ["Mac OS", "Desktop", "14.4.1"]);
 });
 
 function fakeSocket(waiter, duringSend, returnedId = input.messageId) {
