@@ -17,6 +17,7 @@ const expectedTools = [
   "fetch_older_whatsapp_messages",
   "get_whatsapp_status",
   "list_whatsapp_chats",
+  "list_whatsapp_messages",
   "read_whatsapp_chat",
   "search_whatsapp_messages",
 ];
@@ -54,8 +55,8 @@ test("two STDIO clients share one broker until the last client closes", { timeou
     ]);
     assert.deepEqual(toolNames(firstTools), expectedTools);
     assert.deepEqual(toolNames(secondTools), expectedTools);
-    assert.equal(firstTools.tools.length, 5);
-    assert.equal(secondTools.tools.length, 5);
+    assert.equal(firstTools.tools.length, 6);
+    assert.equal(secondTools.tools.length, 6);
 
     brokerPid = descriptor.pid;
     assert.ok(Number.isSafeInteger(brokerPid));
