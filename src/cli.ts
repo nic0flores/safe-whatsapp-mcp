@@ -1,4 +1,4 @@
-// Agent context note: Provides pairing, Codex setup, status, broker-proxied STDIO serve, direct disconnect, and guarded purge commands. Tests: CLI, broker, Codex setup, browser QR, account lifecycle, and package smoke. Keep stdout protocol-only while serving, keep the broker command internal, preserve config/outbox on disconnect, and never expose QR/auth data beyond interactive pairing.
+// Agent context note: Provides pairing, read-only Codex setup, status, broker-proxied STDIO serve, direct disconnect, and guarded purge commands. Tests: CLI, broker, Codex setup, browser QR, account lifecycle, and package smoke. V1 exposes no CLI path that enables WhatsApp sending.
 import process from "node:process";
 import { SafeWhatsAppApplication } from "./application.js";
 import {
@@ -75,25 +75,11 @@ async function run(input: string[]): Promise<void> {
 }
 
 async function setupCodexCommand(input: string[]): Promise<void> {
-  const usage = "setup-codex [--enable-send] [--enable-media-send]";
-  const flags = new Set(input);
-  if (flags.size !== input.length ||
-      input.some((argument) => !["--enable-send", "--enable-media-send"].includes(argument))) {
-    throw invalidArguments(usage);
-  }
-  const enableSend = flags.has("--enable-send");
-  const enableMediaSend = flags.has("--enable-media-send");
-  if (enableMediaSend && !enableSend) throw invalidArguments(usage);
-  const configured = await setupCodex({ enableSend, enableMediaSend });
+  if (input.length > 0) throw invalidArguments("setup-codex");
+  const configured = await setupCodex();
   const state = configured.changed ? "configured" : "already configured";
-  const sending = configured.sendEnabled
-    ? "Browser-reviewed text sending is enabled."
-    : "Text sending is disabled.";
-  const mediaSending = configured.mediaSendEnabled
-    ? "Browser-reviewed media sending is enabled."
-    : "Media sending is disabled.";
   process.stdout.write(
-    `Codex is ${state} for Safe WhatsApp. ${sending} ${mediaSending}\n` +
+    `Codex is ${state} for Safe WhatsApp in hardened read-only mode. Sending is disabled.\n` +
     (configured.enabled
       ? "Restart Codex to load the WhatsApp tools.\n"
       : "The existing Safe WhatsApp MCP entry remains disabled. Enable it in Codex before restarting.\n"),
@@ -172,7 +158,6 @@ async function connectWithExclusiveState(paths: StatePaths): Promise<void> {
       : "WhatsApp connected; message sync is incomplete.";
     process.stdout.write(`${syncMessage}\n`);
   } catch (error) {
-    // Preserve the useful connection/pairing failure if cleanup also fails.
     acceptQr = false;
     await qrUpdates.catch(() => undefined);
     await qrDisplay?.fail().catch(() => qrDisplay?.close()).catch(() => undefined);
@@ -256,11 +241,10 @@ function cleanArgument(value: string): string {
 
 function helpText(): string {
   return `${CLI_NAME} ${VERSION}\n\n` +
-    "Local, human-reviewed MCP access to a personal WhatsApp linked device.\n\n" +
+    "Local read-only MCP access to a personal WhatsApp linked device.\n\n" +
     "Usage:\n" +
     `  ${CLI_NAME} connect          Pair in a private local browser page, or check the link\n` +
-    `  ${CLI_NAME} setup-codex [--enable-send] [--enable-media-send]\n` +
-    "                               Register with Codex; media requires both flags\n" +
+    `  ${CLI_NAME} setup-codex      Register the hardened read-only MCP with Codex\n` +
     `  ${CLI_NAME} status [--live]  Show local status; optionally check WhatsApp live\n` +
     `  ${CLI_NAME} serve            Run the STDIO MCP server\n` +
     `  ${CLI_NAME} disconnect       Log out and clear account state; preserve config/outbox\n` +
