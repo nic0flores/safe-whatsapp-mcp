@@ -9,7 +9,7 @@ import { writePrivateJson } from "../dist/storage/privateFiles.js";
 import { temporaryState } from "./core-helpers.mjs";
 import { SqliteState } from "../dist/storage/database.js";
 
-test("config resolves hardened defaults and environment flags cannot enable sends", async () => {
+test("config resolves hardened long-history defaults and environment flags cannot enable sends", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "safe-wa-config-"));
   const paths = new StatePaths(root);
   const oldSend = process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
@@ -18,17 +18,17 @@ test("config resolves hardened defaults and environment flags cannot enable send
     process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND = "true";
     process.env.SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND = "true";
     const config = await new ConfigLoader(paths).load();
-    assert.equal(config.retentionMs, 3 * 86_400_000);
-    assert.equal(config.maxMessagesPerChat, 100);
+    assert.equal(config.retentionMs, 3_650 * 86_400_000);
+    assert.equal(config.maxMessagesPerChat, 10_000);
     assert.equal(config.pendingTtlMs, 10 * 60_000);
-    assert.equal(config.syncTimeoutMs, 15_000);
-    assert.equal(config.idleTimeoutMs, 60_000);
+    assert.equal(config.syncTimeoutMs, 120_000);
+    assert.equal(config.idleTimeoutMs, 600_000);
     assert.equal(config.inlineMediaBytes, 8 * 1_048_576);
     assert.equal(config.maxMediaBytes, 25 * 1_048_576);
     assert.equal(config.sendEnabled, false);
     assert.equal(config.mediaSendEnabled, false);
-    assert.equal(DEFAULT_LOCAL_CONFIG.retentionDays, 3);
-    assert.equal(DEFAULT_LOCAL_CONFIG.maxMessagesPerChat, 100);
+    assert.equal(DEFAULT_LOCAL_CONFIG.retentionDays, 3_650);
+    assert.equal(DEFAULT_LOCAL_CONFIG.maxMessagesPerChat, 10_000);
   } finally {
     if (oldSend === undefined) delete process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
     else process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND = oldSend;
@@ -44,6 +44,7 @@ test("config rejects invalid ranges and inline media above maximum", async () =>
   assert.throws(() => validateConfig({ inlineMediaMiB: 9 }), /cannot exceed 8/);
   assert.throws(() => validateConfig({ maxMediaMiB: 26 }), /cannot exceed 25/);
   assert.throws(() => validateConfig({ maxMessagesPerChat: 10_001 }), /cannot exceed 10000/);
+  assert.throws(() => validateConfig({ syncTimeoutSeconds: 601 }), /cannot exceed 600/);
   const root = await mkdtemp(path.join(os.tmpdir(), "safe-wa-config-"));
   const paths = new StatePaths(root);
   await writePrivateJson(paths.configFile, { inlineMediaMiB: 26, maxMediaMiB: 25 });
