@@ -12,7 +12,7 @@ import { StatePaths } from "../dist/storage/paths.js";
 import { WhatsAppCore } from "../dist/whatsapp/core.js";
 import { MemoryMasterKeyStore } from "./core-helpers.mjs";
 
-test("unpaired connect cleanup runs before fresh auth hydration and preserves config/outbox", async () => {
+test("unpaired connect cleanup starts a fresh encrypted cache epoch and preserves config/outbox", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-account-connect-"));
   const paths = new StatePaths(root);
   const masterKeyStore = new MemoryMasterKeyStore();
@@ -40,7 +40,7 @@ test("unpaired connect cleanup runs before fresh auth hydration and preserves co
     });
     assert.equal(initial.core.auth.state.creds.registered, false);
     assert.equal(initial.core.auth.state.creds.me, undefined);
-    assertAllApplicationTablesEmpty(initial.core.state);
+    assertOnlyEncryptedCacheEpoch(initial.core.state);
     assert.equal(await fs.readFile(paths.configFile, "utf8"), "{}\n");
     assert.equal(await fs.readFile(path.join(paths.outboxDir, "keep.txt"), "utf8"), "user-owned");
     await fs.access(paths.ownershipMarker);
@@ -49,15 +49,16 @@ test("unpaired connect cleanup runs before fresh auth hydration and preserves co
     await assert.rejects(fs.access(paths.auditFile));
     await assert.rejects(fs.access(`${paths.auditFile}.1.22222222-2222-4222-8222-222222222222.tmp`));
     assert.equal(await fs.readFile(`${paths.auditFile}.notes.tmp`, "utf8"), "not package-owned");
-    assert.equal(masterKeyStore.keys.size, 0);
+    assert.equal(masterKeyStore.keys.size, 1, "only the fresh cache-vault key should remain");
     await assert.rejects(fs.access(paths.credentialVaultFile));
+    await fs.access(paths.cacheVaultFile);
   } finally {
     await initial.close().catch(() => undefined);
     await fs.rm(root, { recursive: true, force: true });
   }
 });
 
-test("connect cleanup preserves QR-paired credentials and allowlisted account state", async () => {
+test("encrypted-cache migration preserves QR pairing but destroys legacy plaintext cache", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-account-qr-paired-"));
   const paths = new StatePaths(root);
   const masterKeyStore = new MemoryMasterKeyStore();
@@ -77,17 +78,20 @@ test("connect cleanup preserves QR-paired credentials and allowlisted account st
     });
     assert.equal(application.core.auth.state.creds.registered, false);
     assert.equal(application.core.auth.isPaired(), true);
-    assert.deepEqual(application.core.state.counts(), { chats: 1, messages: 1, identities: 1 });
+    assert.deepEqual(application.core.state.counts(), { chats: 0, messages: 0, identities: 0 });
     assert.equal(
       application.core.state.db.prepare("SELECT COUNT(*) AS count FROM auth_keys").get().count,
       1,
     );
     assert.equal(
       application.core.state.db.prepare("SELECT COUNT(*) AS count FROM future_account_state").get().count,
-      1,
+      0,
+      "unknown legacy local state must be scrubbed during encrypted-cache migration",
     );
-    assert.equal(masterKeyStore.keys.size, 1);
+    assertEncryptedCacheEpoch(application.core.state);
+    assert.equal(masterKeyStore.keys.size, 2, "auth and cache vaults must use independent keys");
     await fs.access(paths.credentialVaultFile);
+    await fs.access(paths.cacheVaultFile);
   } finally {
     await application?.close().catch(() => undefined);
     if (previousAllowlist === undefined) delete process.env[ALLOWED_DIRECT_E164_ENV];
@@ -220,6 +224,29 @@ function qrAccountIdentity() {
     accountSignature: Buffer.from([3]),
     deviceSignature: Buffer.from([4]),
   };
+}
+
+function assertEncryptedCacheEpoch(state) {
+  assert.deepEqual(
+    state.db.prepare("SELECT key, value FROM local_meta ORDER BY key").all(),
+    [{ key: "encrypted_cache_epoch", value: "1" }],
+  );
+}
+
+function assertOnlyEncryptedCacheEpoch(state) {
+  const tables = state.db.prepare(`
+    SELECT name FROM sqlite_schema
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+  `).all();
+  for (const { name } of tables) {
+    if (name === "local_meta") {
+      assertEncryptedCacheEpoch(state);
+      continue;
+    }
+    const quoted = `"${name.replaceAll('"', '""')}"`;
+    const row = state.db.prepare(`SELECT COUNT(*) AS count FROM ${quoted}`).get();
+    assert.equal(row.count, 0, `${name} should be empty`);
+  }
 }
 
 function assertAllApplicationTablesEmpty(state) {
