@@ -29,8 +29,8 @@ export interface SafeWhatsAppConfig {
 }
 
 export const DEFAULT_LOCAL_CONFIG: Required<LocalConfig> = Object.freeze({
-  retentionDays: 7,
-  maxMessagesPerChat: 200,
+  retentionDays: 3,
+  maxMessagesPerChat: 100,
   pendingTtlMinutes: 10,
   connectionTimeoutSeconds: 15,
   syncTimeoutSeconds: 15,

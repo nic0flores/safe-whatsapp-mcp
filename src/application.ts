@@ -3,6 +3,8 @@ import type { AnyMessageContent, WAUrlInfo } from "baileys";
 import type { MasterKeyStore } from "./auth/masterKeyStore.js";
 import { JsonLineAuditLogger } from "./audit/redactedAudit.js";
 import { ConfigLoader, type SafeWhatsAppConfig } from "./config/config.js";
+import { SafeWhatsAppError } from "./errors.js";
+import { DirectChatAllowlist } from "./security/chatAllowlist.js";
 import type { WhatsAppMcpServices, WhatsAppReadOperations } from "./mcp/contracts.js";
 import { InboundMediaService } from "./media/inboundMedia.js";
 import { ClientMediaSource } from "./media/clientMediaSource.js";
@@ -81,18 +83,22 @@ export class SafeWhatsAppApplication {
         new ClientOutboundSender(core),
         new JsonLineAuditLogger(paths.auditFile),
         {
-          sendEnabled: config.sendEnabled,
-          mediaSendEnabled: config.mediaSendEnabled,
+          sendEnabled: false,
+          mediaSendEnabled: false,
           pendingTtlMs: config.pendingTtlMs,
         },
       );
-      const reader = new ClientReadOperations(core, inboundMedia);
+      const reader = new ClientReadOperations(
+        core,
+        inboundMedia,
+        DirectChatAllowlist.fromEnvironment(),
+      );
       const reviews = new SendReviewManager({
         sends,
         listCachedGroups: (selectedChatId) => cachedReviewGroups(core, selectedChatId),
         getCachedReply: (messageId) => cachedReviewReply(core, messageId),
-        sendEnabled: config.sendEnabled,
-        mediaSendEnabled: config.mediaSendEnabled,
+        sendEnabled: false,
+        mediaSendEnabled: false,
         maxMediaBytes: config.maxMediaBytes,
         ttlMs: config.pendingTtlMs,
         fromLabel: linkedAccountLabel(core),
@@ -186,17 +192,25 @@ class ClientReadOperations implements WhatsAppReadOperations {
   constructor(
     private readonly core: WhatsAppCore,
     private readonly media: InboundMediaService,
+    private readonly allowlist: DirectChatAllowlist,
   ) {}
 
   async getStatus(): Promise<Record<string, unknown>> {
     await this.reconcileMedia();
     return {
       ...this.core.client.status(),
+      sendEnabled: false,
+      mediaSendEnabled: false,
       credentialsAtRest: "aes-256-gcm+os-credential-vault",
       messageCacheAtRest: "plaintext-private-permissions",
       transport: "unofficial-baileys",
       pairingCommand: "safewhatsapp connect",
-      outboxDirectory: this.core.state.paths.display(this.core.state.paths.outboxDir),
+      chatAccessPolicy: "explicit-direct-e164-allowlist",
+      allowedDirectChatCount: this.allowlist.size,
+      groupsExposedToMcp: false,
+      globalSearchEnabled: false,
+      outboundToolsExposed: false,
+      mediaToolsExposed: false,
     };
   }
 
@@ -207,14 +221,14 @@ class ClientReadOperations implements WhatsAppReadOperations {
     cursor?: string;
   }): Promise<Record<string, unknown>> {
     const result = await this.core.client.listChats({
-      kind: input.kind === "all" ? undefined : input.kind,
+      kind: "direct",
       unreadOnly: input.unreadOnly,
       limit: input.limit,
       cursor: input.cursor,
     });
     await this.reconcileMedia();
     return {
-      chats: result.items,
+      chats: this.allowlist.filter(result.items),
       syncCompleteness: result.syncCompleteness,
       ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
     };
@@ -225,6 +239,7 @@ class ClientReadOperations implements WhatsAppReadOperations {
     limit: number;
     cursor?: string;
   }): Promise<Record<string, unknown>> {
+    this.assertAllowedChat(input.chatId);
     const result = await this.core.client.readChat(input);
     await this.reconcileMedia();
     return {
@@ -239,23 +254,17 @@ class ClientReadOperations implements WhatsAppReadOperations {
     limit: number;
     beforeMessageId?: string;
   }): Promise<Record<string, unknown>> {
+    this.assertAllowedChat(input.chatId);
     const result = await this.core.client.fetchOlderMessages(input);
     await this.reconcileMedia();
     return result;
   }
 
   async resyncMessages(): Promise<Record<string, unknown>> {
-    const syncCompleteness = await this.core.client.resyncMessages();
-    await this.reconcileMedia();
-    return {
-      outcome: "refreshed_non_authoritative",
-      authoritative: false,
-      appStateRefreshRequestCompleted: true,
-      syncCompleteness,
-      absenceReconciled: false,
-      removedByAbsence: 0,
-      reason: "whatsapp_authoritative_message_snapshot_unavailable",
-    };
+    throw new SafeWhatsAppError(
+      "Whole-account resync is not exposed by the hardened read-only surface.",
+      "operation_disabled",
+    );
   }
 
   async searchMessages(input: {
@@ -264,7 +273,14 @@ class ClientReadOperations implements WhatsAppReadOperations {
     limit: number;
     cursor?: string;
   }): Promise<Record<string, unknown>> {
-    const result = await this.core.client.searchMessages(input);
+    if (!input.chatId) {
+      throw new SafeWhatsAppError(
+        "Hardened WhatsApp search requires an explicit allowlisted chatId.",
+        "chat_scope_required",
+      );
+    }
+    this.assertAllowedChat(input.chatId);
+    const result = await this.core.client.searchMessages({ ...input, chatId: input.chatId });
     await this.reconcileMedia();
     return {
       messages: result.items,
@@ -276,6 +292,10 @@ class ClientReadOperations implements WhatsAppReadOperations {
   async reconcileMedia(): Promise<void> {
     this.core.messages.prune();
     await this.media.reconcile(this.core.messages.retainedMediaMessageIds());
+  }
+
+  private assertAllowedChat(chatId: string): void {
+    this.allowlist.assertAllowed(this.core.messages.resolveChat(chatId));
   }
 }
 
