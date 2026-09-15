@@ -1,11 +1,23 @@
-// Agent context note: Composes encrypted auth/cache reads with the legacy send/review internals hard-disabled behind a five-tool read-only MCP surface. Tests: application/account lifecycle, hardened privacy, send/review compatibility, and package smoke. Keep WhatsApp the only transport, content untrusted, and outbound gates false.
+// Agent context note: Composes encrypted auth/cache reads with legacy send/review internals hard-disabled behind a general-purpose read-only MCP surface. V3 exposes direct chats globally while keeping groups and outbound tools unavailable.
 import type { AnyMessageContent, WAUrlInfo } from "baileys";
 import type { MasterKeyStore } from "./auth/masterKeyStore.js";
 import { JsonLineAuditLogger } from "./audit/redactedAudit.js";
 import { ConfigLoader, type SafeWhatsAppConfig } from "./config/config.js";
 import { SafeWhatsAppError } from "./errors.js";
+import {
+  decodeCursor,
+  page,
+  pageSize,
+  type ChatSummary,
+  type StoredMessage,
+} from "./messages/messageModels.js";
 import { DirectChatAllowlist } from "./security/chatAllowlist.js";
-import type { WhatsAppMcpServices, WhatsAppReadOperations } from "./mcp/contracts.js";
+import type {
+  WhatsAppMcpServices,
+  WhatsAppMediaKind,
+  WhatsAppMessageOrder,
+  WhatsAppReadOperations,
+} from "./mcp/contracts.js";
 import { InboundMediaService } from "./media/inboundMedia.js";
 import { ClientMediaSource } from "./media/clientMediaSource.js";
 import { OutboxMediaService } from "./media/outbox.js";
@@ -157,10 +169,10 @@ function cachedReviewGroups(core: WhatsAppCore, selectedChatId?: string): Array<
   if (!selectedChatId || first.items.some((group) => group.chatId === selectedChatId)) return first.items;
   let cursor = first.nextCursor;
   while (cursor) {
-    const page = core.messages.listChats({ kind: "group", limit: 200, cursor });
-    const selected = page.items.find((group) => group.chatId === selectedChatId);
+    const currentPage = core.messages.listChats({ kind: "group", limit: 200, cursor });
+    const selected = currentPage.items.find((group) => group.chatId === selectedChatId);
     if (selected) return [...first.items, selected];
-    cursor = page.nextCursor;
+    cursor = currentPage.nextCursor;
   }
   return first.items;
 }
@@ -205,10 +217,16 @@ class ClientReadOperations implements WhatsAppReadOperations {
       messageCacheAtRest: "aes-256-gcm+os-cache-vault",
       transport: "unofficial-baileys",
       pairingCommand: "safewhatsapp connect",
-      chatAccessPolicy: "explicit-direct-e164-allowlist-before-persistence",
-      allowedDirectChatCount: this.allowlist.size,
+      directChatPolicy: this.allowlist.mode,
+      chatAccessPolicy: this.allowlist.mode === "all"
+        ? "all-direct-before-persistence"
+        : "explicit-direct-e164-allowlist-before-persistence",
+      ...(this.allowlist.mode === "allowlist"
+        ? { allowedDirectChatCount: this.allowlist.size }
+        : {}),
       groupsExposedToMcp: false,
-      globalSearchEnabled: false,
+      globalSearchEnabled: true,
+      globalMessageListingEnabled: true,
       outboundToolsExposed: false,
       mediaToolsExposed: false,
     };
@@ -217,36 +235,88 @@ class ClientReadOperations implements WhatsAppReadOperations {
   async listChats(input: {
     kind?: "all" | "direct" | "group";
     unreadOnly?: boolean;
+    query?: string;
+    activeAfter?: string;
+    activeBefore?: string;
     limit: number;
     cursor?: string;
   }): Promise<Record<string, unknown>> {
-    const result = await this.core.client.listChats({
-      kind: "direct",
-      unreadOnly: input.unreadOnly,
-      limit: input.limit,
-      cursor: input.cursor,
-    });
+    const syncCompleteness = await this.syncDirectChats();
+    const after = optionalDate(input.activeAfter, "activeAfter");
+    const before = optionalDate(input.activeBefore, "activeBefore");
+    assertDateRange(after, before);
+    const needle = input.query?.trim().toLocaleLowerCase();
+    let chats = this.collectChats(input.unreadOnly);
+    if (needle) {
+      chats = chats.filter((chat) =>
+        chat.title?.toLocaleLowerCase().includes(needle) ||
+        chat.e164?.toLocaleLowerCase().includes(needle));
+    }
+    if (after !== undefined) {
+      chats = chats.filter((chat) => chat.lastMessageAt && Date.parse(chat.lastMessageAt) >= after);
+    }
+    if (before !== undefined) {
+      chats = chats.filter((chat) => chat.lastMessageAt && Date.parse(chat.lastMessageAt) <= before);
+    }
+    const result = paginate(chats, input.limit, input.cursor);
     await this.reconcileMedia();
     return {
-      chats: this.allowlist.filter(result.items),
-      syncCompleteness: result.syncCompleteness,
+      chats: result.items,
+      syncCompleteness,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    };
+  }
+
+  async listMessages(input: {
+    chatId?: string;
+    after?: string;
+    before?: string;
+    fromMe?: boolean;
+    hasAttachment?: boolean;
+    mediaKind?: WhatsAppMediaKind;
+    order?: WhatsAppMessageOrder;
+    limit: number;
+    cursor?: string;
+  }): Promise<Record<string, unknown>> {
+    if (input.chatId) this.assertAllowedChat(input.chatId);
+    const syncCompleteness = await this.syncDirectChats();
+    const after = optionalDate(input.after, "after");
+    const before = optionalDate(input.before, "before");
+    assertDateRange(after, before);
+    let messages = this.collectMessages(input.chatId);
+    messages = filterMessages(messages, {
+      after,
+      before,
+      fromMe: input.fromMe,
+      hasAttachment: input.hasAttachment,
+      mediaKind: input.mediaKind,
+    });
+    sortMessages(messages, input.order ?? "desc");
+    const result = paginate(messages, input.limit, input.cursor);
+    await this.reconcileMedia();
+    return {
+      messages: result.items.map((message) => this.withChatContext(message)),
+      syncCompleteness,
       ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
     };
   }
 
   async readChat(input: {
     chatId: string;
+    after?: string;
+    before?: string;
+    order?: WhatsAppMessageOrder;
     limit: number;
     cursor?: string;
   }): Promise<Record<string, unknown>> {
-    this.assertAllowedChat(input.chatId);
-    const result = await this.core.client.readChat(input);
-    await this.reconcileMedia();
-    return {
-      messages: result.items,
-      syncCompleteness: result.syncCompleteness,
-      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
-    };
+    return this.listMessages({
+      chatId: input.chatId,
+      after: input.after,
+      before: input.before,
+      order: input.order,
+      limit: input.limit,
+      cursor: input.cursor,
+    });
   }
 
   async fetchOlderMessages(input: {
@@ -270,21 +340,31 @@ class ClientReadOperations implements WhatsAppReadOperations {
   async searchMessages(input: {
     query: string;
     chatId?: string;
+    after?: string;
+    before?: string;
+    fromMe?: boolean;
     limit: number;
     cursor?: string;
   }): Promise<Record<string, unknown>> {
-    if (!input.chatId) {
-      throw new SafeWhatsAppError(
-        "Hardened WhatsApp search requires an explicit allowlisted chatId.",
-        "chat_scope_required",
-      );
-    }
-    this.assertAllowedChat(input.chatId);
-    const result = await this.core.client.searchMessages({ ...input, chatId: input.chatId });
+    const query = input.query.trim();
+    if (!query) throw new SafeWhatsAppError("Search query cannot be empty.", "invalid_search");
+    if (input.chatId) this.assertAllowedChat(input.chatId);
+    const syncCompleteness = await this.syncDirectChats();
+    const after = optionalDate(input.after, "after");
+    const before = optionalDate(input.before, "before");
+    assertDateRange(after, before);
+    const needle = query.toLocaleLowerCase();
+    let messages = filterMessages(this.collectMessages(input.chatId), {
+      after,
+      before,
+      fromMe: input.fromMe,
+    }).filter((message) => message.text?.toLocaleLowerCase().includes(needle));
+    sortMessages(messages, "desc");
+    const result = paginate(messages, input.limit, input.cursor);
     await this.reconcileMedia();
     return {
-      messages: result.items,
-      syncCompleteness: result.syncCompleteness,
+      messages: result.items.map((message) => this.withChatContext(message)),
+      syncCompleteness,
       ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
     };
   }
@@ -294,9 +374,113 @@ class ClientReadOperations implements WhatsAppReadOperations {
     await this.media.reconcile(this.core.messages.retainedMediaMessageIds());
   }
 
+  private async syncDirectChats() {
+    const result = await this.core.client.listChats({ kind: "direct", limit: 1 });
+    return result.syncCompleteness;
+  }
+
+  private collectChats(unreadOnly?: boolean): ChatSummary[] {
+    const chats: ChatSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = this.core.messages.listChats({
+        kind: "direct",
+        unreadOnly,
+        limit: 200,
+        cursor,
+      });
+      chats.push(...this.allowlist.filter(result.items));
+      cursor = result.nextCursor;
+    } while (cursor);
+    return chats;
+  }
+
+  private collectMessages(chatId?: string): StoredMessage[] {
+    const chats = chatId
+      ? [this.core.messages.resolveChat(chatId)].filter((chat): chat is NonNullable<typeof chat> => Boolean(chat))
+      : this.collectChats();
+    const messages: StoredMessage[] = [];
+    for (const chat of chats) {
+      this.allowlist.assertAllowed(chat);
+      let cursor: string | undefined;
+      do {
+        const result = this.core.messages.readChat({ chatId: chat.chatId, limit: 200, cursor });
+        messages.push(...result.items);
+        cursor = result.nextCursor;
+      } while (cursor);
+    }
+    return messages;
+  }
+
+  private withChatContext(message: StoredMessage): Record<string, unknown> {
+    const chat = this.core.messages.resolveChat(message.chatId);
+    return {
+      ...message,
+      ...(chat ? {
+        chat: {
+          chatId: chat.chatId,
+          kind: chat.kind,
+          ...(chat.title ? { title: chat.title } : {}),
+          ...(chat.e164 ? { e164: chat.e164 } : {}),
+        },
+      } : {}),
+    };
+  }
+
   private assertAllowedChat(chatId: string): void {
     this.allowlist.assertAllowed(this.core.messages.resolveChat(chatId));
   }
+}
+
+function optionalDate(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new SafeWhatsAppError(`${name} must be a valid ISO-8601 date or timestamp.`, "invalid_date_filter");
+  }
+  return parsed;
+}
+
+function assertDateRange(after: number | undefined, before: number | undefined): void {
+  if (after !== undefined && before !== undefined && after > before) {
+    throw new SafeWhatsAppError("after cannot be later than before.", "invalid_date_filter");
+  }
+}
+
+function filterMessages(
+  messages: StoredMessage[],
+  input: {
+    after?: number;
+    before?: number;
+    fromMe?: boolean;
+    hasAttachment?: boolean;
+    mediaKind?: WhatsAppMediaKind;
+  },
+): StoredMessage[] {
+  return messages.filter((message) => {
+    const timestamp = Date.parse(message.timestamp);
+    if (input.after !== undefined && timestamp < input.after) return false;
+    if (input.before !== undefined && timestamp > input.before) return false;
+    if (input.fromMe !== undefined && message.fromMe !== input.fromMe) return false;
+    if (input.hasAttachment !== undefined && Boolean(message.media) !== input.hasAttachment) return false;
+    if (input.mediaKind !== undefined && message.media?.kind !== input.mediaKind) return false;
+    return true;
+  });
+}
+
+function sortMessages(messages: StoredMessage[], order: WhatsAppMessageOrder): void {
+  const direction = order === "asc" ? 1 : -1;
+  messages.sort((left, right) => {
+    const time = Date.parse(left.timestamp) - Date.parse(right.timestamp);
+    if (time !== 0) return time * direction;
+    return left.messageId.localeCompare(right.messageId) * direction;
+  });
+}
+
+function paginate<T>(items: T[], limitInput: number, cursor: string | undefined) {
+  const limit = pageSize(limitInput);
+  const offset = decodeCursor(cursor);
+  return page(items.slice(offset, offset + limit + 1), limit, offset, (item) => item);
 }
 
 class ClientDestinationResolver implements DestinationResolver {
