@@ -19,13 +19,13 @@ function Invoke-NativeChecked {
     }
 }
 
-Write-Host "[1/6] Installing exact dependency tree and pinned Baileys pairing patch..."
+Write-Host "[1/6] Installing exact dependency tree..."
 Invoke-NativeChecked npm.cmd ci
 
 Write-Host "[2/6] TypeScript typecheck..."
 Invoke-NativeChecked npm.cmd run typecheck
 
-Write-Host "[3/6] Building..."
+Write-Host "[3/6] Applying pinned Baileys pairing patch and building..."
 Invoke-NativeChecked npm.cmd run build
 
 Write-Host "[4/6] Running hardened V2 encrypted-cache + pairing-refresh tests..."
