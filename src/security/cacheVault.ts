@@ -16,8 +16,7 @@ export type CacheField =
   | "identity_display_name"
   | "chat_title"
   | "message_text"
-  | "message_media_filename"
-  | "message_raw_json";
+  | "message_media_filename";
 
 interface CacheVaultDescriptor {
   version: 1;
@@ -134,7 +133,7 @@ export class CacheVault {
     }
   }
 
-  private static async load(
+  static async load(
     descriptorFile: string,
     keyStore: MasterKeyStore,
     descriptor: CacheVaultDescriptor,
