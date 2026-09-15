@@ -1,4 +1,4 @@
-// Agent context note: Centralizes every private local-state path, including broker coordination and destructive-cleanup ownership. Tests: test/core-config-storage.test.mjs, test/account-lifecycle.test.mjs, and broker tests. Never add an outbound path outside rootDir; update this note after meaningful behavior changes.
+// Agent context note: Centralizes every private local-state path, including independent auth/cache vault descriptors, broker coordination, and destructive-cleanup ownership. Tests: test/core-config-storage.test.mjs, test/account-lifecycle.test.mjs, and broker tests. Never add an outbound path outside rootDir; update this note after meaningful behavior changes.
 import os from "node:os";
 import path from "node:path";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
@@ -34,6 +34,7 @@ export class StatePaths {
   get configFile(): string { return path.join(this.rootDir, "config.json"); }
   get ownershipMarker(): string { return path.join(this.rootDir, ".safe-whatsapp-mcp-state"); }
   get credentialVaultFile(): string { return path.join(this.rootDir, "credential-vault.json"); }
+  get cacheVaultFile(): string { return path.join(this.rootDir, "cache-vault.json"); }
   get databaseFile(): string { return path.join(this.rootDir, "state.sqlite3"); }
   get lockFile(): string { return path.join(this.rootDir, "process.lock"); }
   get brokerFile(): string { return path.join(this.rootDir, "broker.json"); }
