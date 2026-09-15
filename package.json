@@ -30,7 +30,8 @@
     "smoke:standalone": "node scripts/smoke-standalone.mjs",
     "verify:release": "npm run typecheck && npm test && npm run audit:prod && npm run smoke:pack",
     "prepublishOnly": "npm run typecheck && npm test",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "postinstall": "node scripts/apply-baileys-pairing-refresh-patch.mjs"
   },
   "keywords": [
     "mcp",
