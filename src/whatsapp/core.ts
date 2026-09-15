@@ -1,4 +1,4 @@
-// Agent context note: Composes the locked production stack, hardened allowlisted persistence, durable outbound-failure journal, and OS-vault-backed account lifecycle. Tests: test/core-lifecycle.test.mjs, test/account-lifecycle.test.mjs, and hardened persistence tests. Quiesce writes before cleanup, require ownership for destructive work, and preserve config/outbox; update this note after meaningful changes.
+// Agent context note: Composes the locked production stack, hardened allowlisted encrypted persistence, independent auth/cache OS-vault keys, durable outbound-failure journal, and account lifecycle. Tests: lifecycle and hardened privacy suites. Quiesce writes before cleanup, retire both vaults on account removal, and preserve config/outbox; update this note after meaningful changes.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { SafeWhatsAppConfig } from "../config/config.js";
@@ -8,8 +8,13 @@ import { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import { IdentityStore } from "../messages/identityStore.js";
 import { OutboundFailureJournal } from "../replies/outboundFailureJournal.js";
 import { DirectChatAllowlist } from "../security/chatAllowlist.js";
+import { CacheVault, retireStoredCacheVault } from "../security/cacheVault.js";
 import { HardenedMessageStore } from "../security/hardenedMessageStore.js";
-import { scrubNonAllowlistedPersistence } from "../security/persistencePrivacy.js";
+import {
+  hasRetainedCacheRows,
+  initializeEncryptedCacheEpoch,
+  scrubNonAllowlistedPersistence,
+} from "../security/persistencePrivacy.js";
 import {
   assertStateOwnership,
   clearAccountBoundState,
@@ -54,6 +59,7 @@ export class WhatsAppCore {
     private readonly lock: ProcessLock,
     private readonly router?: EventRouter,
     readonly outboundFailures?: OutboundFailureJournal,
+    private readonly cacheVault?: CacheVault,
   ) {}
 
   static async open(
@@ -65,6 +71,7 @@ export class WhatsAppCore {
     await lock.acquire();
     let state: SqliteState | undefined;
     let auth: SqliteAuthState | undefined;
+    let cacheVault: CacheVault | undefined;
     try {
       await ensureStateOwnership(paths);
       state = await SqliteState.open(paths);
@@ -74,13 +81,29 @@ export class WhatsAppCore {
         await auth.quiesceCredentialState();
         await clearAccountBoundState(state);
         await auth.retireCredentialVault();
+        await retireStoredCacheVault(paths.cacheVaultFile, keyStore);
         await auth.close();
         auth = await SqliteAuthState.open(state, keyStore);
       }
+
+      const cacheEpochReset = initializeEncryptedCacheEpoch(state);
+      if (cacheEpochReset) await retireStoredCacheVault(paths.cacheVaultFile, keyStore);
+
       const chatAllowlist = options.chatAllowlist ?? DirectChatAllowlist.fromEnvironment();
       scrubNonAllowlistedPersistence(state, chatAllowlist);
-      const identities = new IdentityStore(state);
-      const messages = new HardenedMessageStore(state, identities, config, chatAllowlist);
+      cacheVault = await CacheVault.open(
+        paths.cacheVaultFile,
+        keyStore,
+        hasRetainedCacheRows(state),
+      );
+      const identities = new IdentityStore(state, cacheVault);
+      const messages = new HardenedMessageStore(
+        state,
+        identities,
+        config,
+        chatAllowlist,
+        cacheVault,
+      );
       const outboundFailures = new OutboundFailureJournal(state);
       const router = new EventRouter(auth, messages, outboundFailures);
       const factory = new BaileysSocketFactory(auth);
@@ -109,8 +132,10 @@ export class WhatsAppCore {
         lock,
         router,
         outboundFailures,
+        cacheVault,
       );
     } catch (error) {
+      cacheVault?.dispose();
       try {
         await auth?.close().catch(() => undefined);
       } finally {
@@ -138,6 +163,7 @@ export class WhatsAppCore {
     await this.auth.quiesceCredentialState();
     await clearAccountBoundState(this.state);
     await this.auth.retireCredentialVault();
+    await this.cacheVault?.retire();
     return { wasPaired, remoteLogout };
   }
 
@@ -154,6 +180,7 @@ export class WhatsAppCore {
       try {
         await this.auth.close();
       } finally {
+        this.cacheVault?.dispose();
         try {
           this.state.close();
         } finally {
@@ -187,6 +214,9 @@ export async function purgeLocalState(
     ];
     for (const target of exactTargets) await fs.rm(target, { recursive: true, force: true });
     await retireStoredCredentialVault(paths.credentialVaultFile, keyStore, {
+      abandonIfUnconfirmed: options.abandonCredentialKey,
+    });
+    await retireStoredCacheVault(paths.cacheVaultFile, keyStore, {
       abandonIfUnconfirmed: options.abandonCredentialKey,
     });
     const entries = await fs.readdir(paths.rootDir).catch(() => []);
