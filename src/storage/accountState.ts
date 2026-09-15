@@ -1,4 +1,4 @@
-// Agent context note: Owns the state marker, recognizes vault/broker coordination files, and clears account tables/files/journals while preserving config/outbox. Tests: test/account-lifecycle.test.mjs, test/core-lifecycle.test.mjs, and broker tests. Keep cleanup schema-agnostic, match only producer-shaped artifacts, and run destructive operations only while the process lock is held.
+// Agent context note: Owns the state marker, recognizes independent auth/cache vault descriptors plus broker coordination files, and clears account tables/files/journals while preserving config/outbox. Tests: test/account-lifecycle.test.mjs, test/core-lifecycle.test.mjs, and broker tests. Keep cleanup schema-agnostic, match only producer-shaped artifacts, and run destructive operations only while the process lock is held.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { SafeWhatsAppError } from "../errors.js";
@@ -112,6 +112,7 @@ function isKnownStateEntry(paths: StatePaths, entry: string): boolean {
   const exact = new Set([
     path.basename(paths.ownershipMarker),
     path.basename(paths.credentialVaultFile),
+    path.basename(paths.cacheVaultFile),
     path.basename(paths.configFile),
     path.basename(paths.databaseFile),
     path.basename(paths.mediaDir),
