@@ -1,9 +1,10 @@
-// Agent context note: Initializes the encrypted-cache epoch, scrubs legacy plaintext pages, and keeps only explicitly allowlisted direct-chat identities before the hardened store serves data.
+// Agent context note: Initializes the encrypted-cache epoch, scrubs legacy plaintext pages schema-agnostically while preserving only encrypted auth rows, and keeps only explicitly allowlisted direct-chat identities before the hardened store serves data.
 import type { SqliteState } from "../storage/database.js";
 import { DirectChatAllowlist } from "./chatAllowlist.js";
 
 const ENCRYPTED_CACHE_EPOCH_KEY = "encrypted_cache_epoch";
 const ENCRYPTED_CACHE_EPOCH = "1";
+const AUTH_TABLES = new Set(["auth_credentials", "auth_keys"]);
 
 export function initializeEncryptedCacheEpoch(state: SqliteState): boolean {
   const row = state.db.prepare(
@@ -11,15 +12,18 @@ export function initializeEncryptedCacheEpoch(state: SqliteState): boolean {
   ).get(ENCRYPTED_CACHE_EPOCH_KEY) as { value: string } | undefined;
   if (row?.value === ENCRYPTED_CACHE_EPOCH) return false;
 
+  const tables = state.db.prepare(`
+    SELECT name FROM sqlite_schema
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+    ORDER BY name
+  `).all() as { name: string }[];
+
   state.db.transaction(() => {
-    state.db.prepare("DELETE FROM messages").run();
-    state.db.prepare("DELETE FROM chats").run();
-    state.db.prepare("DELETE FROM identity_aliases").run();
-    state.db.prepare("DELETE FROM identities").run();
-    state.db.prepare("DELETE FROM groups").run();
-    state.db.prepare("DELETE FROM message_tombstones").run();
-    state.db.prepare("DELETE FROM chat_clear_tombstones").run();
-    state.db.prepare("DELETE FROM local_meta WHERE key = 'last_sync_at'").run();
+    state.db.pragma("defer_foreign_keys = ON");
+    for (const { name } of tables) {
+      if (AUTH_TABLES.has(name)) continue;
+      state.db.exec(`DELETE FROM ${quotedIdentifier(name)}`);
+    }
   })();
 
   // Scrub plaintext remnants from both WAL and freed SQLite pages before the
@@ -99,4 +103,8 @@ export function scrubNonAllowlistedPersistence(
       )
     `).run(...allowed);
   })();
+}
+
+function quotedIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
 }
