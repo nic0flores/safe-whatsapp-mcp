@@ -1,4 +1,4 @@
-// Agent context note: Initializes the encrypted-cache epoch, scrubs legacy plaintext pages schema-agnostically while preserving only encrypted auth rows, and keeps only explicitly allowlisted direct-chat identities before the hardened store serves data.
+// Agent context note: Initializes the encrypted-cache epoch, scrubs legacy plaintext pages schema-agnostically while preserving only encrypted auth rows, and enforces the selected direct-chat access policy before the hardened store serves data.
 import type { SqliteState } from "../storage/database.js";
 import { DirectChatAllowlist } from "./chatAllowlist.js";
 
@@ -54,10 +54,38 @@ export function scrubNonAllowlistedPersistence(
   state: SqliteState,
   allowlist: DirectChatAllowlist,
 ): void {
-  const allowed = allowlist.values();
   state.db.transaction(() => {
     state.db.prepare("DELETE FROM groups").run();
 
+    if (allowlist.mode === "all") {
+      state.db.prepare("DELETE FROM chats WHERE kind <> 'direct'").run();
+      state.db.prepare(`
+        DELETE FROM identities
+        WHERE id NOT IN (
+          SELECT identity_id FROM chats
+          WHERE kind = 'direct' AND identity_id IS NOT NULL
+        )
+      `).run();
+      state.db.prepare(`
+        DELETE FROM message_tombstones
+        WHERE transport_chat_jid NOT IN (
+          SELECT ia.jid
+          FROM identity_aliases ia
+          JOIN identities i ON i.id = ia.identity_id
+        )
+      `).run();
+      state.db.prepare(`
+        DELETE FROM chat_clear_tombstones
+        WHERE transport_chat_jid NOT IN (
+          SELECT ia.jid
+          FROM identity_aliases ia
+          JOIN identities i ON i.id = ia.identity_id
+        )
+      `).run();
+      return;
+    }
+
+    const allowed = allowlist.values();
     if (allowed.length === 0) {
       state.db.prepare("DELETE FROM messages").run();
       state.db.prepare("DELETE FROM chats").run();
