@@ -1,4 +1,4 @@
-// Agent context note: Creates production Baileys sockets with passive presence, no local send echoes/retries, exact-ID acknowledgement waits, app-state resync, and bounded history access. Tests: test/outbound-acknowledgement.test.mjs, test/core-session-client.test.mjs, and test/on-demand-history.test.mjs. Never use full-history registration for the bounded cache or resend messages that bypassed confirmation; update this note after meaningful changes.
+// Agent context note: Creates production Baileys sockets with passive presence, no local send echoes/retries, exact-ID acknowledgement waits, app-state resync, and full direct-chat history bootstrap for the encrypted V3 cache. Tests: test/outbound-acknowledgement.test.mjs, test/core-session-client.test.mjs, and test/on-demand-history.test.mjs. Never resend messages that bypassed confirmation; history remains filtered before persistence by HardenedMessageStore.
 import makeWASocket, { ALL_WA_PATCH_NAMES, Browsers, type WAMessage } from "baileys";
 import type { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import type { SocketEvents, SocketFactory, WhatsAppSocket } from "./socketTypes.js";
@@ -14,7 +14,11 @@ export class BaileysSocketFactory implements SocketFactory {
       logger: silentLogger as never,
       browser: Browsers.appropriate("Desktop"),
       markOnlineOnConnect: false,
-      syncFullHistory: false,
+      // V3 is a personal knowledge connector: request the companion-device
+      // full-history bootstrap at registration time and explicitly accept FULL
+      // history notifications. Baileys rc14 otherwise drops FULL by default.
+      syncFullHistory: true,
+      shouldSyncHistoryMessage: () => true,
       ...SAFE_OUTBOUND_SOCKET_POLICY,
       shouldIgnoreJid: (jid) =>
         jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.includes("@newsletter"),
