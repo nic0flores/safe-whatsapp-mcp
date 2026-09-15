@@ -17,7 +17,8 @@ test("application composition is offline until paired and releases its state loc
     assert.equal(status.paired, false);
     assert.equal(status.connected, false);
     assert.equal(status.credentialsAtRest, "aes-256-gcm+os-credential-vault");
-    assert.equal(status.messageCacheAtRest, "plaintext-private-permissions");
+    assert.equal(status.messageCacheAtRest, "aes-256-gcm+os-cache-vault");
+    assert.equal(status.chatAccessPolicy, "explicit-direct-e164-allowlist-before-persistence");
     assert.equal(status.transport, "unofficial-baileys");
     assert.equal(status.sendEnabled, false);
     await assert.rejects(
