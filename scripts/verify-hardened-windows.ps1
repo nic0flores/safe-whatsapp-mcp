@@ -11,7 +11,7 @@ function Invoke-NativeChecked {
 
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Native command failed with exit code $LASTEXITCODE: $Command $($Arguments -join ' ')"
+        throw "Native command failed with exit code ${LASTEXITCODE}: $Command $($Arguments -join ' ')"
     }
 }
 
