@@ -3,6 +3,10 @@ Set-StrictMode -Version Latest
 
 # PowerShell does not reliably turn native non-zero exit codes into terminating
 # errors on every supported Windows/PowerShell combination. Check explicitly.
+#
+# Invoke npm through npm.cmd rather than npm.ps1. Windows PowerShell's npm.ps1
+# shim reads $MyInvocation.Statement; under StrictMode that property can be
+# absent and fail before npm itself starts.
 function Invoke-NativeChecked {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
@@ -16,13 +20,13 @@ function Invoke-NativeChecked {
 }
 
 Write-Host "[1/6] Installing exact dependency tree..."
-Invoke-NativeChecked npm ci
+Invoke-NativeChecked npm.cmd ci
 
 Write-Host "[2/6] TypeScript typecheck..."
-Invoke-NativeChecked npm run typecheck
+Invoke-NativeChecked npm.cmd run typecheck
 
 Write-Host "[3/6] Building..."
-Invoke-NativeChecked npm run build
+Invoke-NativeChecked npm.cmd run build
 
 Write-Host "[4/6] Running hardened V2 encrypted-cache tests..."
 Invoke-NativeChecked node --test `
@@ -35,7 +39,7 @@ Invoke-NativeChecked node --test `
     test/cli.test.mjs
 
 Write-Host "[5/6] Auditing production dependencies..."
-Invoke-NativeChecked npm audit --omit=dev
+Invoke-NativeChecked npm.cmd audit --omit=dev
 
 Write-Host "[6/6] Verifying exposed MCP tool names..."
 $forbidden = @(
