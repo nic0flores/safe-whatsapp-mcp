@@ -19,7 +19,7 @@
     "examples/stdio-client.example.json"
   ],
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/add-cli-shebang.mjs",
+    "build": "node scripts/apply-baileys-pairing-refresh-patch.mjs && node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/add-cli-shebang.mjs",
     "build:standalone": "npm run build && node scripts/build-standalone.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
@@ -30,8 +30,7 @@
     "smoke:standalone": "node scripts/smoke-standalone.mjs",
     "verify:release": "npm run typecheck && npm test && npm run audit:prod && npm run smoke:pack",
     "prepublishOnly": "npm run typecheck && npm test",
-    "prepack": "npm run build",
-    "postinstall": "node scripts/apply-baileys-pairing-refresh-patch.mjs"
+    "prepack": "npm run build"
   },
   "keywords": [
     "mcp",
