@@ -14,19 +14,11 @@ import { StatePaths } from "../dist/storage/paths.js";
 const cli = path.resolve("dist/cli.js");
 const execFile = promisify(execFileCallback);
 const expectedTools = [
-  "discard_prepared_whatsapp_message",
   "fetch_older_whatsapp_messages",
-  "get_whatsapp_media",
   "get_whatsapp_status",
   "list_whatsapp_chats",
-  "list_whatsapp_sends",
-  "open_whatsapp_send_review",
-  "prepare_whatsapp_media_send",
-  "prepare_whatsapp_text_send",
   "read_whatsapp_chat",
-  "resync_whatsapp_messages",
   "search_whatsapp_messages",
-  "send_prepared_whatsapp_message",
 ];
 
 test("two STDIO clients share one broker until the last client closes", { timeout: 30_000 }, async () => {
@@ -62,8 +54,8 @@ test("two STDIO clients share one broker until the last client closes", { timeou
     ]);
     assert.deepEqual(toolNames(firstTools), expectedTools);
     assert.deepEqual(toolNames(secondTools), expectedTools);
-    assert.equal(firstTools.tools.length, 13);
-    assert.equal(secondTools.tools.length, 13);
+    assert.equal(firstTools.tools.length, 5);
+    assert.equal(secondTools.tools.length, 5);
 
     brokerPid = descriptor.pid;
     assert.ok(Number.isSafeInteger(brokerPid));
