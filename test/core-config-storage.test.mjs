@@ -9,7 +9,7 @@ import { writePrivateJson } from "../dist/storage/privateFiles.js";
 import { temporaryState } from "./core-helpers.mjs";
 import { SqliteState } from "../dist/storage/database.js";
 
-test("config resolves the documented conservative defaults and exact send flags", async () => {
+test("config resolves the documented hardened retention defaults and exact send flags", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "safe-wa-config-"));
   const paths = new StatePaths(root);
   const oldSend = process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
@@ -18,8 +18,8 @@ test("config resolves the documented conservative defaults and exact send flags"
     delete process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
     process.env.SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND = "true";
     const disabled = await new ConfigLoader(paths).load();
-    assert.equal(disabled.retentionMs, 7 * 86_400_000);
-    assert.equal(disabled.maxMessagesPerChat, 200);
+    assert.equal(disabled.retentionMs, 3 * 86_400_000);
+    assert.equal(disabled.maxMessagesPerChat, 100);
     assert.equal(disabled.pendingTtlMs, 10 * 60_000);
     assert.equal(disabled.syncTimeoutMs, 15_000);
     assert.equal(disabled.idleTimeoutMs, 60_000);
@@ -31,7 +31,8 @@ test("config resolves the documented conservative defaults and exact send flags"
     const enabled = await new ConfigLoader(paths).load();
     assert.equal(enabled.sendEnabled, true);
     assert.equal(enabled.mediaSendEnabled, true);
-    assert.equal(DEFAULT_LOCAL_CONFIG.retentionDays, 7);
+    assert.equal(DEFAULT_LOCAL_CONFIG.retentionDays, 3);
+    assert.equal(DEFAULT_LOCAL_CONFIG.maxMessagesPerChat, 100);
   } finally {
     if (oldSend === undefined) delete process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
     else process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND = oldSend;
