@@ -206,6 +206,7 @@ const expectedTools = [
   "fetch_older_whatsapp_messages",
   "get_whatsapp_status",
   "list_whatsapp_chats",
+  "list_whatsapp_messages",
   "read_whatsapp_chat",
   "search_whatsapp_messages",
 ];
