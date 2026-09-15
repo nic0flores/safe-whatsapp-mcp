@@ -1,4 +1,4 @@
-name: Hardened V1 CI
+name: Hardened V2 CI
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
       - run: npm audit --omit=dev
 
   hardening-surface:
-    name: Hardened surface invariants
+    name: Hardened surface + persistence invariants
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -42,5 +42,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: node --test test/chat-allowlist.test.mjs test/mcp-tools.test.mjs test/core-config-storage.test.mjs test/application.test.mjs test/cli.test.mjs
+      - run: node --test test/chat-allowlist.test.mjs test/hardened-persistence.test.mjs test/mcp-tools.test.mjs test/core-config-storage.test.mjs test/application.test.mjs test/cli.test.mjs
       - run: npm audit --omit=dev
