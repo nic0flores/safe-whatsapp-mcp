@@ -1,4 +1,4 @@
-// Agent context note: Owns cancellable lazy single-flight sockets, credential-safe pairing restarts, bounded sync/retries, awaited shutdown, idle shutdown, and explicit remote logout. Tests: test/core-session-client.test.mjs. Awaited connection/sync deadlines must keep Node alive; only the background idle timer is unreferenced; update this note after meaningful changes.
+// Agent context note: Owns cancellable lazy single-flight sockets, credential-safe pairing restarts, bounded sync/retries, sanitized transport-failure diagnostics, awaited shutdown, idle shutdown, and explicit remote logout. Tests: test/core-session-client.test.mjs. Awaited connection/sync deadlines must keep Node alive; only the background idle timer is unreferenced; update this note after meaningful changes.
 import { SafeWhatsAppError } from "../errors.js";
 import type { EventRouter } from "./eventRouter.js";
 import type { ConnectionUpdate, SocketFactory, WhatsAppSocket } from "./socketTypes.js";
@@ -177,11 +177,9 @@ export class SessionManager {
         ]);
       }
     }
-    if (lastError instanceof SafeWhatsAppError) throw lastError;
-    throw new SafeWhatsAppError(
-      "WhatsApp could not connect after bounded retries.",
-      "connection_failed",
-    );
+    const failure = sanitizedConnectionFailure(lastError);
+    this.lastFailureCode = failure.code;
+    throw failure;
   }
 
   private async openOnce(
@@ -393,6 +391,43 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds: number, message
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+function sanitizedConnectionFailure(error: unknown): SafeWhatsAppError {
+  if (error instanceof SafeWhatsAppError) return error;
+  const status = statusCode(error);
+  if (status !== undefined) {
+    const reason = transportFailureReason(status);
+    return new SafeWhatsAppError(
+      `WhatsApp could not connect after bounded retries (transport status ${status}: ${reason}).`,
+      `connection_${reason}`,
+    );
+  }
+  if (error instanceof Error && error.message === "WhatsApp connection timed out.") {
+    return new SafeWhatsAppError(
+      "WhatsApp could not connect after bounded retries (handshake timeout before connection opened).",
+      "connection_timeout",
+    );
+  }
+  return new SafeWhatsAppError(
+    "WhatsApp could not connect after bounded retries (no transport status was provided).",
+    "connection_failed",
+  );
+}
+
+function transportFailureReason(status: number): string {
+  switch (status) {
+    case 401: return "logged_out";
+    case 403: return "forbidden";
+    case 408: return "timed_out_or_lost";
+    case 411: return "multidevice_mismatch";
+    case 428: return "connection_closed";
+    case 440: return "connection_replaced";
+    case 500: return "bad_session";
+    case 503: return "unavailable_service";
+    case 515: return "restart_required";
+    default: return "transport_error";
   }
 }
 
