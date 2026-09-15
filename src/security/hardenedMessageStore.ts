@@ -33,6 +33,7 @@ import { DirectChatAllowlist } from "./chatAllowlist.js";
 import type { CacheVault } from "./cacheVault.js";
 
 const MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES = 47_000;
+const MAX_ENCRYPTED_FILENAME_PLAINTEXT_BYTES = 240;
 
 export class HardenedMessageStore extends MessageStore {
   private readonly allowedAliases = new Map<string, string>();
@@ -333,7 +334,7 @@ export class HardenedMessageStore extends MessageStore {
       clone.conversation = this.cacheVault.encrypt(
         "message_text",
         sourceId,
-        boundedEncryptedText(clone.conversation),
+        boundedUtf8(clone.conversation.replace(/\u0000/g, ""), MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES),
       );
       return clone as T;
     }
@@ -344,7 +345,7 @@ export class HardenedMessageStore extends MessageStore {
         node.text = this.cacheVault.encrypt(
           "message_text",
           sourceId,
-          boundedEncryptedText(node.text),
+          boundedUtf8(node.text.replace(/\u0000/g, ""), MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES),
         );
       }
       clone.extendedTextMessage = node;
@@ -364,14 +365,17 @@ export class HardenedMessageStore extends MessageStore {
         node.caption = this.cacheVault.encrypt(
           "message_text",
           sourceId,
-          boundedEncryptedText(node.caption),
+          boundedUtf8(node.caption.replace(/\u0000/g, ""), MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES),
         );
       }
       if (typeof node.fileName === "string" && node.fileName) {
         node.fileName = this.cacheVault.encrypt(
           "message_media_filename",
           sourceId,
-          node.fileName.slice(0, 512),
+          boundedUtf8(
+            node.fileName.replace(/\u0000/g, ""),
+            MAX_ENCRYPTED_FILENAME_PLAINTEXT_BYTES,
+          ),
         );
       }
       // Hardened read-only mode never persists downloadable media capabilities.
@@ -406,10 +410,10 @@ export class HardenedMessageStore extends MessageStore {
   }
 }
 
-function boundedEncryptedText(value: string): string {
-  const bytes = Buffer.from(value.replace(/\u0000/g, ""), "utf8");
-  if (bytes.byteLength <= MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES) return bytes.toString("utf8");
-  let end = MAX_ENCRYPTED_TEXT_PLAINTEXT_BYTES;
+function boundedUtf8(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.byteLength <= maxBytes) return bytes.toString("utf8");
+  let end = maxBytes;
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
   return bytes.subarray(0, end).toString("utf8");
 }
