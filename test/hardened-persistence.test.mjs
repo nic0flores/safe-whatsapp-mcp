@@ -11,6 +11,8 @@ const allowedE164 = "+56911111111";
 const allowedJid = "56911111111@s.whatsapp.net";
 const deniedJid = "56922222222@s.whatsapp.net";
 const allowedLid = "111111111111@lid";
+const unknownLid = "999999999999@lid";
+const groupJid = "120363000000000000@g.us";
 
 function allowlist() {
   return DirectChatAllowlist.fromEnvironment({
@@ -18,7 +20,13 @@ function allowlist() {
   });
 }
 
-test("hardened persistence drops denied direct chats, unresolved LIDs, and groups before SQLite", async () => {
+function allDirect() {
+  return DirectChatAllowlist.fromEnvironment({
+    SAFE_WHATSAPP_MCP_DIRECT_CHAT_POLICY: "all",
+  });
+}
+
+test("hardened allowlist persistence drops denied direct chats, unresolved LIDs, and groups before SQLite", async () => {
   const fixture = await temporaryState();
   try {
     const identities = new IdentityStore(fixture.state);
@@ -28,18 +36,18 @@ test("hardened persistence drops denied direct chats, unresolved LIDs, and group
       contacts: [
         { id: allowedJid, notify: "Allowed" },
         { id: deniedJid, notify: "Denied" },
-        { id: "999999999999@lid", notify: "Unknown LID" },
+        { id: unknownLid, notify: "Unknown LID" },
       ],
       chats: [
         { id: allowedJid, name: "Allowed" },
         { id: deniedJid, name: "Denied" },
-        { id: "999999999999@lid", name: "Unknown LID" },
-        { id: "120363000000000000@g.us", name: "Private group" },
+        { id: unknownLid, name: "Unknown LID" },
+        { id: groupJid, name: "Private group" },
       ],
       messages: [
         directMessage({ id: "allowed-1", jid: allowedJid, text: "keep me" }),
         directMessage({ id: "denied-1", jid: deniedJid, text: "drop me" }),
-        directMessage({ id: "unknown-lid-1", jid: "999999999999@lid", text: "drop lid" }),
+        directMessage({ id: "unknown-lid-1", jid: unknownLid, text: "drop lid" }),
         directMessage({ id: "allowed-lid-1", jid: allowedLid, text: "keep mapped lid" }),
       ],
     });
@@ -59,6 +67,48 @@ test("hardened persistence drops denied direct chats, unresolved LIDs, and group
     ).all().map((row) => row.e164);
     assert.deepEqual(e164s, [allowedE164]);
     assert.equal(JSON.stringify(fixture.state.counts()).includes("Denied"), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("all-direct persistence admits phone and unresolved LID direct chats but still drops groups", async () => {
+  const fixture = await temporaryState();
+  try {
+    const identities = new IdentityStore(fixture.state);
+    const store = new HardenedMessageStore(fixture.state, identities, runtimeConfig, allDirect());
+    store.ingestHistory({
+      contacts: [
+        { id: allowedJid, notify: "First direct" },
+        { id: deniedJid, notify: "Second direct" },
+        { id: unknownLid, notify: "LID direct" },
+      ],
+      chats: [
+        { id: allowedJid, name: "First direct" },
+        { id: deniedJid, name: "Second direct" },
+        { id: unknownLid, name: "LID direct" },
+        { id: groupJid, name: "Private group" },
+      ],
+      messages: [
+        directMessage({ id: "direct-a", jid: allowedJid, text: "first" }),
+        directMessage({ id: "direct-b", jid: deniedJid, text: "second" }),
+        directMessage({ id: "direct-lid", jid: unknownLid, text: "lid" }),
+      ],
+    });
+
+    const chats = fixture.state.db.prepare(
+      "SELECT transport_jid, kind FROM chats ORDER BY transport_jid",
+    ).all();
+    assert.deepEqual(chats.map((row) => row.transport_jid), [allowedJid, deniedJid, unknownLid].sort());
+    assert.ok(chats.every((row) => row.kind === "direct"));
+    const texts = fixture.state.db.prepare(
+      "SELECT text FROM messages ORDER BY text",
+    ).all().map((row) => row.text);
+    assert.deepEqual(texts, ["first", "lid", "second"]);
+    assert.equal(
+      fixture.state.db.prepare("SELECT COUNT(*) AS count FROM groups").get().count,
+      0,
+    );
   } finally {
     await fixture.cleanup();
   }
@@ -99,6 +149,33 @@ test("legacy scrub removes non-allowlisted cached chats, identities, and tombsto
       "SELECT COUNT(*) AS count FROM message_tombstones WHERE transport_chat_jid = ?",
     ).get(deniedJid).count;
     assert.equal(deniedTombstone, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("all-direct scrub removes groups without deleting retained direct chats", async () => {
+  const fixture = await temporaryState();
+  try {
+    const identities = new IdentityStore(fixture.state);
+    const legacy = new MessageStore(fixture.state, identities, runtimeConfig);
+    legacy.ingestHistory({
+      chats: [
+        { id: allowedJid, name: "Direct" },
+        { id: groupJid, name: "Group" },
+      ],
+      contacts: [{ id: allowedJid, notify: "Direct" }],
+      messages: [directMessage({ id: "direct-old", jid: allowedJid, text: "direct old" })],
+    });
+    legacy.upsertGroups([{ id: groupJid, subject: "Group" }]);
+
+    scrubNonAllowlistedPersistence(fixture.state, allDirect());
+
+    const chats = fixture.state.db.prepare(
+      "SELECT transport_jid, kind FROM chats ORDER BY transport_jid",
+    ).all();
+    assert.deepEqual(chats, [{ transport_jid: allowedJid, kind: "direct" }]);
+    assert.equal(fixture.state.db.prepare("SELECT COUNT(*) AS count FROM groups").get().count, 0);
   } finally {
     await fixture.cleanup();
   }
