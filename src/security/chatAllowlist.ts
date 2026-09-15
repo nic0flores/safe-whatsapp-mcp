@@ -1,4 +1,4 @@
-// Agent context note: Enforces the hardened direct-chat E.164 allowlist before chat content can reach MCP. Keep groups denied and fail closed on invalid or missing configuration.
+// Agent context note: Enforces the hardened direct-chat E.164 allowlist before chat content can reach MCP or persistence. Keep groups denied and fail closed on invalid or missing configuration.
 import { SafeWhatsAppError } from "../errors.js";
 
 export const ALLOWED_DIRECT_E164_ENV = "SAFE_WHATSAPP_MCP_ALLOWED_DIRECT_E164";
@@ -38,8 +38,16 @@ export class DirectChatAllowlist {
     return this.allowed.size;
   }
 
+  values(): string[] {
+    return [...this.allowed].sort();
+  }
+
+  allowsE164(e164: string | undefined): boolean {
+    return typeof e164 === "string" && this.allowed.has(e164);
+  }
+
   allows(chat: AllowlistChat | undefined): boolean {
-    return chat?.kind === "direct" && typeof chat.e164 === "string" && this.allowed.has(chat.e164);
+    return chat?.kind === "direct" && this.allowsE164(chat.e164);
   }
 
   filter<T extends AllowlistChat>(chats: readonly T[]): T[] {
