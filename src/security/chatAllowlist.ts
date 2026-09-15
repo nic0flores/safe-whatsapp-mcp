@@ -58,7 +58,7 @@ export class DirectChatAllowlist {
   }
 
   allowsE164(e164: string | undefined): boolean {
-    if (this.mode === "all") return typeof e164 === "string" && E164.test(e164);
+    if (this.mode === "all") return true;
     return typeof e164 === "string" && this.allowed.has(e164);
   }
 
