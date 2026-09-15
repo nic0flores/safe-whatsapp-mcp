@@ -24,9 +24,10 @@ Invoke-NativeChecked npm run typecheck
 Write-Host "[3/6] Building..."
 Invoke-NativeChecked npm run build
 
-Write-Host "[4/6] Running hardened V1 tests..."
+Write-Host "[4/6] Running hardened V2 tests..."
 Invoke-NativeChecked node --test `
     test/chat-allowlist.test.mjs `
+    test/hardened-persistence.test.mjs `
     test/mcp-tools.test.mjs `
     test/core-config-storage.test.mjs `
     test/application.test.mjs `
@@ -52,5 +53,5 @@ foreach ($name in $forbidden) {
     }
 }
 
-Write-Host "HARDENED V1 WINDOWS GATE: PASS" -ForegroundColor Green
-Write-Host "Note: the complete upstream suite must also pass on Linux/macOS CI before pairing a primary WhatsApp account."
+Write-Host "HARDENED V2 WINDOWS GATE: PASS" -ForegroundColor Green
+Write-Host "Note: the complete suite must also pass on Linux/macOS CI before pairing a primary WhatsApp account."
