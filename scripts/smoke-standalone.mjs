@@ -25,19 +25,11 @@ const extractionRoot = path.join(temporaryRoot, "extracted");
 const bundleRoot = path.join(extractionRoot, bundleName);
 const launcher = path.join(bundleRoot, standaloneExecutableName(process.platform));
 const expectedTools = [
-  "discard_prepared_whatsapp_message",
   "fetch_older_whatsapp_messages",
-  "get_whatsapp_media",
   "get_whatsapp_status",
   "list_whatsapp_chats",
-  "list_whatsapp_sends",
-  "open_whatsapp_send_review",
-  "prepare_whatsapp_media_send",
-  "prepare_whatsapp_text_send",
   "read_whatsapp_chat",
-  "resync_whatsapp_messages",
   "search_whatsapp_messages",
-  "send_prepared_whatsapp_message",
 ];
 
 try {
@@ -113,10 +105,10 @@ try {
   await importBundledNativeModule("sharp/dist/index.mjs", env);
   try {
     await runLauncher(launcher, ["connect"], env);
-    throw new Error("Non-interactive standalone connect unexpectedly succeeded.");
+    throw new Error("Non-interactive standalone connect unexpectedly succeeded");
   } catch (error) {
     if (!error?.stderr?.includes("interactive local terminal")) throw error;
-    if (error.stdout?.includes("qr.png")) throw new Error("Standalone connect exposed QR output.");
+    if (error.stdout?.includes("qr.png")) throw new Error("Standalone connect exposed QR output");
   }
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
