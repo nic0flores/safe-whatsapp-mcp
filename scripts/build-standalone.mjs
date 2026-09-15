@@ -1,4 +1,4 @@
-// Agent context note: Builds a platform-specific safewhatsapp directory with its own Node runtime and production dependencies. Tests: test/standalone-layout.test.mjs and scripts/smoke-standalone.mjs. The runtime and native addons must be installed by the same Node executable; update this note after meaningful changes.
+// Agent context note: Builds a platform-specific safewhatsapp directory with its own Node runtime and production dependencies. Tests: test/standalone-layout.test.mjs and scripts/smoke-standalone.mjs. The runtime and native addons must be installed by the same Node executable; the pinned Baileys pairing compatibility patch is explicitly applied inside the staged app after its production install.
 import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
@@ -75,7 +75,20 @@ try {
     await copyFile(path.join(projectRoot, "examples", name), path.join(examplesRoot, name));
   }
 
+  const scriptsRoot = path.join(appRoot, "scripts");
+  await mkdir(scriptsRoot, { mode: 0o755 });
+  const pairingPatchScript = "apply-baileys-pairing-refresh-patch.mjs";
+  await copyFile(
+    path.join(projectRoot, "scripts", pairingPatchScript),
+    path.join(scriptsRoot, pairingPatchScript),
+  );
+
   const nodeBinDir = path.dirname(process.execPath);
+  const installEnv = {
+    ...process.env,
+    PATH: `${nodeBinDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    npm_node_execpath: process.execPath,
+  };
   await run(process.execPath, [
     process.env.npm_execpath,
     "ci",
@@ -84,11 +97,11 @@ try {
     "--no-fund",
   ], {
     cwd: appRoot,
-    env: {
-      ...process.env,
-      PATH: `${nodeBinDir}${path.delimiter}${process.env.PATH ?? ""}`,
-      npm_node_execpath: process.execPath,
-    },
+    env: installEnv,
+  });
+  await run(process.execPath, [path.join(scriptsRoot, pairingPatchScript)], {
+    cwd: appRoot,
+    env: installEnv,
   });
 
   await copyFile(process.execPath, runtimeBin);
