@@ -1,4 +1,4 @@
-// Agent context note: Routes Baileys events into durable auth/chat state, journals exact-ID late send rejections before reporting them, and completes sync only after final recent history. Tests: test/core-event-router.test.mjs and test/message-resync.test.mjs. Pending notifications are not completion; do not add presence/read-receipt effects or treat send echoes as authority; update this note after meaningful changes.
+// Agent context note: Routes Baileys events into durable auth/chat state, journals exact-ID late send rejections before reporting them, and exposes recent/full history progress to the session manager. Tests: test/core-event-router.test.mjs and test/message-resync.test.mjs. Pending notifications are not completion; do not add presence/read-receipt effects or treat send echoes as authority.
 import {
   proto,
   WAMessageStatus,
@@ -18,6 +18,7 @@ import { rejectionErrorCode } from "./outboundAcknowledgement.js";
 export interface EventRouterHooks {
   onConnectionUpdate?(update: ConnectionUpdate): void;
   onHistoryComplete?(): void;
+  onFullHistoryProgress?(progress?: number | null): void;
   onPersistenceError?(error: unknown): void;
 }
 
@@ -91,6 +92,9 @@ export class EventRouter {
       syncType?: proto.HistorySync.HistorySyncType | null;
     }>("messaging-history.set", (history) => {
       this.messages.ingestHistory(history);
+      if (history.syncType === proto.HistorySync.HistorySyncType.FULL) {
+        hooks.onFullHistoryProgress?.(history.progress);
+      }
       if (
         history.syncType === proto.HistorySync.HistorySyncType.RECENT &&
         history.progress === 100
