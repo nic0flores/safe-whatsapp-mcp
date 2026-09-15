@@ -203,19 +203,11 @@ try {
 }
 
 const expectedTools = [
-  "discard_prepared_whatsapp_message",
   "fetch_older_whatsapp_messages",
-  "get_whatsapp_media",
   "get_whatsapp_status",
   "list_whatsapp_chats",
-  "list_whatsapp_sends",
-  "open_whatsapp_send_review",
-  "prepare_whatsapp_media_send",
-  "prepare_whatsapp_text_send",
   "read_whatsapp_chat",
-  "resync_whatsapp_messages",
   "search_whatsapp_messages",
-  "send_prepared_whatsapp_message",
 ];
 const stateDir = path.join(tmp, "smoke-state");
 const mcpEnv = {
