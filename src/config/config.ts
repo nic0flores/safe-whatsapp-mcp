@@ -1,8 +1,7 @@
-// Agent context note: Validates local runtime settings and resolves conservative defaults. Tests: test/core-config-storage.test.mjs. Keep units explicit and update this note after meaningful behavior changes.
+// Agent context note: Validates local runtime settings and resolves hardened read-only defaults. Tests: test/core-config-storage.test.mjs. V1 must never enable outbound WhatsApp transport from environment flags.
 import { readJsonFile } from "../storage/privateFiles.js";
 import type { StatePaths } from "../storage/paths.js";
 import { SafeWhatsAppError } from "../errors.js";
-import { MEDIA_SEND_ENABLED_ENV, SEND_ENABLED_ENV } from "../constants.js";
 
 export interface LocalConfig {
   retentionDays?: number;
@@ -62,7 +61,6 @@ export class ConfigLoader {
         "invalid_config",
       );
     }
-    const sendEnabled = envFlag(SEND_ENABLED_ENV);
     return {
       retentionMs: resolved.retentionDays * 86_400_000,
       maxMessagesPerChat: resolved.maxMessagesPerChat,
@@ -72,8 +70,8 @@ export class ConfigLoader {
       idleTimeoutMs: resolved.idleTimeoutSeconds * 1_000,
       inlineMediaBytes: resolved.inlineMediaMiB * 1_048_576,
       maxMediaBytes: resolved.maxMediaMiB * 1_048_576,
-      sendEnabled,
-      mediaSendEnabled: sendEnabled && envFlag(MEDIA_SEND_ENABLED_ENV),
+      sendEnabled: false,
+      mediaSendEnabled: false,
     };
   }
 }
@@ -149,11 +147,4 @@ function boundedNumber(value: unknown, name: keyof LocalConfig): number | undefi
     );
   }
   return number;
-}
-
-function envFlag(name: string): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "" || raw === "false") return false;
-  if (raw === "true") return true;
-  throw new SafeWhatsAppError(`${name} must be either true or false.`, "invalid_config");
 }
