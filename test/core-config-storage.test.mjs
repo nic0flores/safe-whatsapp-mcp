@@ -9,28 +9,24 @@ import { writePrivateJson } from "../dist/storage/privateFiles.js";
 import { temporaryState } from "./core-helpers.mjs";
 import { SqliteState } from "../dist/storage/database.js";
 
-test("config resolves the documented hardened retention defaults and exact send flags", async () => {
+test("config resolves hardened defaults and environment flags cannot enable sends", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "safe-wa-config-"));
   const paths = new StatePaths(root);
   const oldSend = process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
   const oldMedia = process.env.SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND;
   try {
-    delete process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
-    process.env.SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND = "true";
-    const disabled = await new ConfigLoader(paths).load();
-    assert.equal(disabled.retentionMs, 3 * 86_400_000);
-    assert.equal(disabled.maxMessagesPerChat, 100);
-    assert.equal(disabled.pendingTtlMs, 10 * 60_000);
-    assert.equal(disabled.syncTimeoutMs, 15_000);
-    assert.equal(disabled.idleTimeoutMs, 60_000);
-    assert.equal(disabled.inlineMediaBytes, 8 * 1_048_576);
-    assert.equal(disabled.maxMediaBytes, 25 * 1_048_576);
-    assert.equal(disabled.mediaSendEnabled, false);
-
     process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND = "true";
-    const enabled = await new ConfigLoader(paths).load();
-    assert.equal(enabled.sendEnabled, true);
-    assert.equal(enabled.mediaSendEnabled, true);
+    process.env.SAFE_WHATSAPP_MCP_ENABLE_MEDIA_SEND = "true";
+    const config = await new ConfigLoader(paths).load();
+    assert.equal(config.retentionMs, 3 * 86_400_000);
+    assert.equal(config.maxMessagesPerChat, 100);
+    assert.equal(config.pendingTtlMs, 10 * 60_000);
+    assert.equal(config.syncTimeoutMs, 15_000);
+    assert.equal(config.idleTimeoutMs, 60_000);
+    assert.equal(config.inlineMediaBytes, 8 * 1_048_576);
+    assert.equal(config.maxMediaBytes, 25 * 1_048_576);
+    assert.equal(config.sendEnabled, false);
+    assert.equal(config.mediaSendEnabled, false);
     assert.equal(DEFAULT_LOCAL_CONFIG.retentionDays, 3);
     assert.equal(DEFAULT_LOCAL_CONFIG.maxMessagesPerChat, 100);
   } finally {
@@ -41,7 +37,7 @@ test("config resolves the documented hardened retention defaults and exact send 
   }
 });
 
-test("config rejects invalid ranges, bad booleans, and inline media above maximum", async () => {
+test("config rejects invalid ranges and inline media above maximum", async () => {
   assert.throws(() => validateConfig({ retentionDay: 7 }), /unsupported setting/);
   assert.throws(() => validateConfig({ maxMessagesPerChat: 1.5 }), /positive integer/);
   assert.throws(() => validateConfig({ retentionDays: 0 }), /positive number/);
@@ -52,15 +48,7 @@ test("config rejects invalid ranges, bad booleans, and inline media above maximu
   const paths = new StatePaths(root);
   await writePrivateJson(paths.configFile, { inlineMediaMiB: 26, maxMediaMiB: 25 });
   await assert.rejects(new ConfigLoader(paths).load(), /cannot exceed/);
-  const old = process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
-  await writePrivateJson(paths.configFile, {});
-  process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND = "1";
-  try {
-    await assert.rejects(new ConfigLoader(new StatePaths(root)).load(), /true or false/);
-  } finally {
-    if (old === undefined) delete process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND;
-    else process.env.SAFE_WHATSAPP_MCP_ENABLE_SEND = old;
-  }
+  await rm(root, { recursive: true, force: true });
 });
 
 test("private state uses 0700 directories and 0600 files", { skip: process.platform === "win32" }, async () => {
