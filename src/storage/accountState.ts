@@ -1,4 +1,4 @@
-// Agent context note: Owns the state marker, recognizes independent auth/cache vault descriptors plus broker coordination files, and clears account tables/files/journals while preserving config/outbox. Tests: test/account-lifecycle.test.mjs, test/core-lifecycle.test.mjs, and broker tests. Keep cleanup schema-agnostic, match only producer-shaped artifacts, and run destructive operations only while the process lock is held.
+// Agent context note: Owns the state marker, recognizes independent auth/cache vault descriptors plus broker coordination files, and clears either auth-only pairing state or full account tables/files while preserving config/outbox. Tests: test/account-lifecycle.test.mjs, test/core-lifecycle.test.mjs, and broker tests. Keep cleanup schema-agnostic where possible, match only producer-shaped artifacts, and run destructive operations only while the process lock is held.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { SafeWhatsAppError } from "../errors.js";
@@ -43,6 +43,23 @@ export async function assertStateOwnership(paths: StatePaths): Promise<void> {
     throw error;
   }
   if (content !== OWNERSHIP_MARKER_CONTENT) throw invalidOwnershipMarker();
+}
+
+/**
+ * Forget only the linked-device authentication rows while keeping the encrypted
+ * direct-chat cache intact. This is intentionally narrower than account unlink:
+ * it exists for a same-account re-pair where the new companion registration
+ * needs different history-sync capabilities. Callers must quiesce auth writes
+ * and hold the process lock before invoking it.
+ */
+export async function clearAuthenticationStatePreservingCache(state: SqliteState): Promise<void> {
+  await assertStateOwnership(state.paths);
+  state.db.transaction(() => {
+    state.db.prepare("DELETE FROM auth_keys").run();
+    state.db.prepare("DELETE FROM auth_credentials").run();
+  })();
+  state.db.pragma("wal_checkpoint(TRUNCATE)");
+  state.hardenFiles();
 }
 
 export async function clearAccountBoundState(state: SqliteState): Promise<void> {
