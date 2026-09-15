@@ -149,4 +149,4 @@ for (const [ok, label] of requiredChecks) {
   }
 }
 
-console.log(`[baileys-pairing-refresh] patched baileys ${EXPECTED_BAILEYS_VERSION} with upstream PR #2765 + pre-login ACK fix from PR #2749`);
+process.stderr.write(`[baileys-pairing-refresh] patched baileys ${EXPECTED_BAILEYS_VERSION} with upstream PR #2765 + pre-login ACK fix from PR #2749\n`);
