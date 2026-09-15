@@ -20,10 +20,12 @@ if ($currentBranch -ne $expectedBranch) {
     throw "Expected branch '$expectedBranch' but current branch is '$currentBranch'."
 }
 
-if (-not (git diff --quiet)) {
+& git diff --quiet
+if ($LASTEXITCODE -ne 0) {
     throw "Working tree has uncommitted changes. Commit/stash them before running this repair."
 }
-if (-not (git diff --cached --quiet)) {
+& git diff --cached --quiet
+if ($LASTEXITCODE -ne 0) {
     throw "Git index has staged changes. Commit/stash them before running this repair."
 }
 
