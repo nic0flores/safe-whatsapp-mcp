@@ -1,4 +1,4 @@
-// Agent context note: Provides pairing, read-only Codex setup, encrypted-cache status, broker-proxied STDIO serve, direct disconnect, and guarded two-vault purge commands. Tests: CLI, broker, Codex setup, browser QR, account lifecycle, and package smoke. Expose no CLI path that enables WhatsApp sending.
+// Agent context note: Provides pairing, same-account cache-preserving relink, read-only Codex setup, encrypted-cache status, broker-proxied STDIO serve, direct disconnect, and guarded two-vault purge commands. Tests: CLI, broker, Codex setup, browser QR, account lifecycle, and package smoke. Expose no CLI path that enables WhatsApp sending.
 import process from "node:process";
 import { SafeWhatsAppApplication } from "./application.js";
 import {
@@ -12,6 +12,7 @@ import { ConfigLoader } from "./config/config.js";
 import { CLI_NAME, PACKAGE_NAME, VERSION } from "./constants.js";
 import { SafeWhatsAppError, publicError } from "./errors.js";
 import { BrowserQrDisplay } from "./qr/browserQr.js";
+import { clearAuthenticationStatePreservingCache } from "./storage/accountState.js";
 import { StatePaths } from "./storage/paths.js";
 import { purgeLocalState, WhatsAppCore } from "./whatsapp/core.js";
 
@@ -41,6 +42,10 @@ async function run(input: string[]): Promise<void> {
     case "connect":
       assertNoArguments(rest);
       await connectCommand();
+      return;
+    case "relink":
+      assertNoArguments(rest);
+      await relinkCommand();
       return;
     case "setup-codex":
       await setupCodexCommand(rest);
@@ -92,7 +97,44 @@ async function connectCommand(): Promise<void> {
   await withBrokerStateTakeover(paths, () => connectWithExclusiveState(paths));
 }
 
-async function connectWithExclusiveState(paths: StatePaths): Promise<void> {
+async function relinkCommand(): Promise<void> {
+  requireInteractiveTerminal();
+  const paths = new StatePaths();
+  await withBrokerStateTakeover(paths, async () => {
+    const config = await new ConfigLoader(paths).load();
+    const core = await WhatsAppCore.open(paths, config, { connectionTimeoutMs: 60_000 });
+    let remoteLogout: "requested" | "not-paired" | "unconfirmed" = "not-paired";
+    try {
+      if (core.client.status().paired) {
+        remoteLogout = "unconfirmed";
+        try {
+          await core.client.unlinkRemote();
+          remoteLogout = "requested";
+        } catch {
+          await core.client.disconnect().catch(() => undefined);
+        }
+      }
+      await core.auth.quiesceCredentialState();
+      await clearAuthenticationStatePreservingCache(core.state);
+    } finally {
+      await core.close().catch(() => undefined);
+    }
+
+    process.stdout.write(
+      remoteLogout === "requested"
+        ? "Previous linked device logout requested. Preserved encrypted direct-chat cache; starting same-account re-pair.\n"
+        : remoteLogout === "unconfirmed"
+          ? "Previous linked device logout was not confirmed. Preserved encrypted direct-chat cache; starting same-account re-pair. If WhatsApp shows a stale linked device later, remove that old device in WhatsApp → Settings → Linked Devices.\n"
+          : "No active pairing found. Preserved encrypted direct-chat cache; starting same-account pairing.\n",
+    );
+    await connectWithExclusiveState(paths, { clearResidualIfUnpaired: false });
+  });
+}
+
+async function connectWithExclusiveState(
+  paths: StatePaths,
+  options: { clearResidualIfUnpaired?: boolean } = {},
+): Promise<void> {
   let qrDisplay: BrowserQrDisplay | undefined;
   let qrUpdates = Promise.resolve();
   let qrDisplayError: unknown;
@@ -107,7 +149,7 @@ async function connectWithExclusiveState(paths: StatePaths): Promise<void> {
     paths,
     connectionTimeoutMs: 300_000,
     syncTimeoutMs: 120_000,
-    clearResidualIfUnpaired: true,
+    clearResidualIfUnpaired: options.clearResidualIfUnpaired ?? true,
     onQr: (qr) => {
       if (!acceptQr) return;
       qrUpdates = qrUpdates.then(async () => {
@@ -244,6 +286,7 @@ function helpText(): string {
     "Local read-only MCP access to a personal WhatsApp linked device.\n\n" +
     "Usage:\n" +
     `  ${CLI_NAME} connect          Pair in a private local browser page, or check the link\n` +
+    `  ${CLI_NAME} relink           Re-pair the same account for full history; preserve encrypted cache\n` +
     `  ${CLI_NAME} setup-codex      Register the hardened read-only MCP with Codex\n` +
     `  ${CLI_NAME} status [--live]  Show local status; optionally check WhatsApp live\n` +
     `  ${CLI_NAME} serve            Run the STDIO MCP server\n` +
