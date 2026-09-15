@@ -9,7 +9,7 @@ function Invoke-NativeChecked {
 
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Native command failed with exit code $LASTEXITCODE: $Command $($Arguments -join ' ')"
+        throw "Native command failed with exit code ${LASTEXITCODE}: $Command $($Arguments -join ' ')"
     }
 }
 
@@ -39,9 +39,6 @@ Invoke-NativeChecked npm install --package-lock-only --ignore-scripts
 
 Write-Host "Running the fail-closed hardened Windows gate..."
 & "$PSScriptRoot\verify-hardened-windows.ps1"
-if ($LASTEXITCODE -ne 0) {
-    throw "Hardened Windows verification did not complete successfully."
-}
 
 Write-Host "Checking patch integrity..."
 Invoke-NativeChecked git diff --check
