@@ -1,6 +1,50 @@
-// Agent context note: Scrubs legacy cached WhatsApp state so only explicitly allowlisted direct-chat identities and their rows remain before the hardened store starts serving data.
+// Agent context note: Initializes the encrypted-cache epoch, scrubs legacy plaintext pages, and keeps only explicitly allowlisted direct-chat identities before the hardened store serves data.
 import type { SqliteState } from "../storage/database.js";
 import { DirectChatAllowlist } from "./chatAllowlist.js";
+
+const ENCRYPTED_CACHE_EPOCH_KEY = "encrypted_cache_epoch";
+const ENCRYPTED_CACHE_EPOCH = "1";
+
+export function initializeEncryptedCacheEpoch(state: SqliteState): boolean {
+  const row = state.db.prepare(
+    "SELECT value FROM local_meta WHERE key = ?",
+  ).get(ENCRYPTED_CACHE_EPOCH_KEY) as { value: string } | undefined;
+  if (row?.value === ENCRYPTED_CACHE_EPOCH) return false;
+
+  state.db.transaction(() => {
+    state.db.prepare("DELETE FROM messages").run();
+    state.db.prepare("DELETE FROM chats").run();
+    state.db.prepare("DELETE FROM identity_aliases").run();
+    state.db.prepare("DELETE FROM identities").run();
+    state.db.prepare("DELETE FROM groups").run();
+    state.db.prepare("DELETE FROM message_tombstones").run();
+    state.db.prepare("DELETE FROM chat_clear_tombstones").run();
+    state.db.prepare("DELETE FROM local_meta WHERE key = 'last_sync_at'").run();
+  })();
+
+  // Scrub plaintext remnants from both WAL and freed SQLite pages before the
+  // epoch marker is committed. A crash before the marker safely repeats this.
+  state.db.pragma("wal_checkpoint(TRUNCATE)");
+  state.db.exec("VACUUM");
+  state.db.pragma("wal_checkpoint(TRUNCATE)");
+  state.db.prepare(`
+    INSERT INTO local_meta (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(ENCRYPTED_CACHE_EPOCH_KEY, ENCRYPTED_CACHE_EPOCH);
+  state.hardenFiles();
+  return true;
+}
+
+export function hasRetainedCacheRows(state: SqliteState): boolean {
+  const row = state.db.prepare(`
+    SELECT EXISTS (
+      SELECT 1 FROM messages
+      UNION ALL SELECT 1 FROM chats
+      UNION ALL SELECT 1 FROM identities
+    ) AS present
+  `).get() as { present: number };
+  return row.present === 1;
+}
 
 export function scrubNonAllowlistedPersistence(
   state: SqliteState,
