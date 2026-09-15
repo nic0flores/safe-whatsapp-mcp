@@ -3,6 +3,12 @@ import makeWASocket, { ALL_WA_PATCH_NAMES, Browsers, type WAMessage } from "bail
 import type { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import type { SocketEvents, SocketFactory, WhatsAppSocket } from "./socketTypes.js";
 
+// Baileys' full-history guidance uses a desktop companion profile rather than
+// the host OS browser identity. Keep the companion identity stable across the
+// registration socket and the post-pair restart so WhatsApp sees one device
+// profile throughout the bootstrap, even when this process runs on Windows.
+export const V3_COMPANION_BROWSER = Browsers.macOS("Desktop");
+
 export class BaileysSocketFactory implements SocketFactory {
   constructor(
     private readonly auth: SqliteAuthState,
@@ -18,7 +24,7 @@ export class BaileysSocketFactory implements SocketFactory {
     const socket = makeWASocket({
       auth: this.auth.state,
       logger: silentLogger as never,
-      browser: Browsers.appropriate("Desktop"),
+      browser: V3_COMPANION_BROWSER,
       markOnlineOnConnect: false,
       syncFullHistory: requestFullHistory,
       // Keep accepting FULL notifications after the registration socket
