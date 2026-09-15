@@ -1,4 +1,4 @@
-// Agent context note: Fail-closed ingress facade for the hardened read-only fork. It allows only explicitly allowlisted direct chats to reach MessageStore persistence; groups and unresolved/unauthorized LIDs are dropped before SQLite.
+// Agent context note: Fail-closed ingress/read facade for the hardened read-only fork. It filters before SQLite and, when a cache vault is present, encrypts human content before MessageStore sees it. Groups, unresolved/unauthorized LIDs, media locators, and global search are denied.
 import type {
   Chat,
   ChatUpdate,
@@ -14,12 +14,23 @@ import { SafeWhatsAppError } from "../errors.js";
 import { IdentityStore, e164FromPhoneJid, normalizeUserJid } from "../messages/identityStore.js";
 import { MessageStore } from "../messages/messageStore.js";
 import {
+  decodeCursor,
+  page,
+  pageSize,
+  type ChatSummary,
+  type Page,
+  type RetainedMessage,
+  type StoredMessage,
+} from "../messages/messageModels.js";
+import {
   isGroupJid,
   isPhoneJid,
   isUserJid,
+  normalizeChatJid,
 } from "../messages/messageStoreHelpers.js";
 import type { SqliteState } from "../storage/database.js";
 import { DirectChatAllowlist } from "./chatAllowlist.js";
+import type { CacheVault } from "./cacheVault.js";
 
 export class HardenedMessageStore extends MessageStore {
   private readonly allowedAliases = new Map<string, string>();
@@ -29,6 +40,7 @@ export class HardenedMessageStore extends MessageStore {
     identities: IdentityStore,
     config: Pick<SafeWhatsAppConfig, "retentionMs" | "maxMessagesPerChat">,
     private readonly allowlist: DirectChatAllowlist,
+    private readonly cacheVault?: CacheVault,
   ) {
     super(state, identities, config);
   }
@@ -43,19 +55,25 @@ export class HardenedMessageStore extends MessageStore {
       this.rememberPair(mapping.lid, mapping.pn));
     const contacts = input.contacts.filter((contact) => this.contactAllowed(contact));
     const chats = input.chats.filter((chat) => this.chatAllowed(chat.id));
-    const messages = input.messages.filter((message) => this.messageAllowed(message));
+    const messages = input.messages
+      .filter((message) => this.messageAllowed(message))
+      .map((message) => this.protectMessage(message));
     super.ingestHistory({ chats, contacts, messages, lidPnMappings });
   }
 
   override ingestUpsert(input: { messages: WAMessage[]; type: string }): void {
     super.ingestUpsert({
       ...input,
-      messages: input.messages.filter((message) => this.messageAllowed(message)),
+      messages: input.messages
+        .filter((message) => this.messageAllowed(message))
+        .map((message) => this.protectMessage(message)),
     });
   }
 
   override applyUpdates(updates: WAMessageUpdate[]): void {
-    super.applyUpdates(updates.filter((update) => this.keyAllowed(update.key)));
+    super.applyUpdates(updates
+      .filter((update) => this.keyAllowed(update.key))
+      .map((update) => this.protectUpdate(update)));
   }
 
   override applyDeletes(update: { keys: WAMessageKey[] } | { jid: string; all: true }): void {
@@ -79,7 +97,17 @@ export class HardenedMessageStore extends MessageStore {
   }
 
   override upsertChats(chats: (Chat | ChatUpdate)[]): void {
-    super.upsertChats(chats.filter((chat) => this.chatAllowed(chat.id)));
+    const allowed = chats.filter((chat) => this.chatAllowed(chat.id)).map((chat) => {
+      if (!this.cacheVault || !chat.id || !isUserJid(chat.id)) return chat;
+      const record = chat as Chat & { name?: string | null };
+      const name = record.name?.trim();
+      if (!name) return chat;
+      return {
+        ...chat,
+        name: this.cacheVault.encrypt("chat_title", normalizeChatJid(chat.id), name.slice(0, 256)),
+      } as Chat | ChatUpdate;
+    });
+    super.upsertChats(allowed);
   }
 
   override deleteChats(jids: string[]): void {
@@ -88,6 +116,106 @@ export class HardenedMessageStore extends MessageStore {
 
   override upsertGroups(_groups: Partial<GroupMetadata>[]): void {
     // Hardened V2 never persists group metadata.
+  }
+
+  override listChats(input: {
+    limit?: number;
+    cursor?: string;
+    kind?: "direct" | "group";
+    unreadOnly?: boolean;
+  } = {}): Page<ChatSummary> {
+    const result = super.listChats({ ...input, kind: "direct" });
+    if (!this.cacheVault) return result;
+    return {
+      ...result,
+      items: result.items.map((chat) => {
+        const resolved = super.resolveChat(chat.chatId);
+        if (!resolved) return { ...chat, latestSnippet: undefined };
+        return {
+          ...chat,
+          ...(chat.title
+            ? { title: this.cacheVault!.decrypt("chat_title", resolved.transportJid, chat.title) }
+            : {}),
+          ...(chat.latestSnippet
+            ? { latestSnippet: this.cacheVault!.decrypt("message_text", resolved.transportJid, chat.latestSnippet) }
+            : {}),
+        };
+      }),
+    };
+  }
+
+  override readChat(input: { chatId: string; limit?: number; cursor?: string }): Page<StoredMessage> {
+    const resolved = super.resolveChat(input.chatId);
+    if (!resolved) throw new SafeWhatsAppError("WhatsApp chat was not found.", "chat_not_found");
+    const result = super.readChat(input);
+    return this.cacheVault
+      ? { ...result, items: result.items.map((message) => this.unprotectStored(message, resolved.transportJid)) }
+      : result;
+  }
+
+  override searchMessages(input: {
+    query: string;
+    chatId?: string;
+    limit?: number;
+    cursor?: string;
+  }): Page<StoredMessage> {
+    if (!this.cacheVault) return super.searchMessages(input);
+    const query = input.query.trim();
+    if (!query) throw new SafeWhatsAppError("Search query cannot be empty.", "invalid_search");
+    if (!input.chatId) {
+      throw new SafeWhatsAppError(
+        "Hardened WhatsApp search requires an explicit allowlisted chatId.",
+        "chat_scope_required",
+      );
+    }
+    const resolved = super.resolveChat(input.chatId);
+    if (!resolved) throw new SafeWhatsAppError("WhatsApp chat was not found.", "chat_not_found");
+
+    const matches: StoredMessage[] = [];
+    let cursor: string | undefined;
+    do {
+      const batch = super.readChat({ chatId: input.chatId, limit: 200, cursor });
+      for (const stored of batch.items) {
+        const message = this.unprotectStored(stored, resolved.transportJid);
+        if (message.text?.toLocaleLowerCase().includes(query.toLocaleLowerCase())) matches.push(message);
+      }
+      cursor = batch.nextCursor;
+    } while (cursor);
+
+    const limit = pageSize(input.limit);
+    const offset = decodeCursor(input.cursor);
+    const window = matches.slice(offset, offset + limit + 1);
+    return page(window, limit, offset, (message) => message);
+  }
+
+  override getRetainedMessage(messageId: string): RetainedMessage | undefined {
+    const retained = super.getRetainedMessage(messageId);
+    if (!retained || !this.cacheVault) return retained;
+    return {
+      ...retained,
+      message: this.unprotectStored(retained.message, retained.transportChatJid),
+    };
+  }
+
+  override retainedMediaMessageIds(): string[] {
+    // Media is not part of the hardened read-only contract. Keeping the list
+    // empty also causes the inbound-media reconciler to delete legacy bytes.
+    return [];
+  }
+
+  override resolveChat(chatId: string): {
+    chatId: string;
+    transportJid: string;
+    kind: "direct" | "group";
+    title?: string;
+    e164?: string;
+  } | undefined {
+    const resolved = super.resolveChat(chatId);
+    if (!resolved || !this.cacheVault || !resolved.title) return resolved;
+    return {
+      ...resolved,
+      title: this.cacheVault.decrypt("chat_title", resolved.transportJid, resolved.title),
+    };
   }
 
   override ensureDirectChat(transportJid: string): { chatId: string; transportJid: string } {
@@ -154,6 +282,116 @@ export class HardenedMessageStore extends MessageStore {
     this.allowedAliases.set(normalizedFirst, e164!);
     this.allowedAliases.set(normalizedSecond, e164!);
     return true;
+  }
+
+  private protectMessage(message: WAMessage): WAMessage {
+    if (!this.cacheVault || !message.key.remoteJid || !isUserJid(message.key.remoteJid) || !message.message) {
+      return message;
+    }
+    const chatJid = normalizeChatJid(message.key.remoteJid);
+    return {
+      ...message,
+      message: this.protectContent(message.message, chatJid),
+    } as WAMessage;
+  }
+
+  private protectUpdate(update: WAMessageUpdate): WAMessageUpdate {
+    if (!this.cacheVault || !update.key.remoteJid || !isUserJid(update.key.remoteJid) ||
+        !update.update.message) return update;
+    return {
+      ...update,
+      update: {
+        ...update.update,
+        message: this.protectContent(update.update.message, normalizeChatJid(update.key.remoteJid)),
+      },
+    } as WAMessageUpdate;
+  }
+
+  private protectContent<T extends Record<string, any>>(content: T, chatJid: string): T {
+    if (!this.cacheVault) return content;
+    const clone: Record<string, any> = { ...content };
+
+    for (const wrapper of [
+      "ephemeralMessage",
+      "viewOnceMessage",
+      "viewOnceMessageV2",
+      "viewOnceMessageV2Extension",
+      "documentWithCaptionMessage",
+      "editedMessage",
+    ]) {
+      const node = clone[wrapper];
+      if (node?.message) {
+        clone[wrapper] = { ...node, message: this.protectContent(node.message, chatJid) };
+        return clone as T;
+      }
+    }
+
+    if (clone.protocolMessage?.editedMessage) {
+      clone.protocolMessage = {
+        ...clone.protocolMessage,
+        editedMessage: this.protectContent(clone.protocolMessage.editedMessage, chatJid),
+      };
+      return clone as T;
+    }
+
+    if (typeof clone.conversation === "string" && clone.conversation) {
+      clone.conversation = this.cacheVault.encrypt("message_text", chatJid, clone.conversation);
+      return clone as T;
+    }
+
+    if (clone.extendedTextMessage) {
+      const node = { ...clone.extendedTextMessage };
+      if (typeof node.text === "string" && node.text) {
+        node.text = this.cacheVault.encrypt("message_text", chatJid, node.text);
+      }
+      clone.extendedTextMessage = node;
+      return clone as T;
+    }
+
+    for (const property of [
+      "imageMessage",
+      "audioMessage",
+      "videoMessage",
+      "documentMessage",
+      "stickerMessage",
+    ]) {
+      if (!clone[property]) continue;
+      const node = { ...clone[property] };
+      if (typeof node.caption === "string" && node.caption) {
+        node.caption = this.cacheVault.encrypt("message_text", chatJid, node.caption);
+      }
+      if (typeof node.fileName === "string" && node.fileName) {
+        node.fileName = this.cacheVault.encrypt("message_media_filename", chatJid, node.fileName);
+      }
+      // Hardened read-only mode never persists downloadable media capabilities.
+      delete node.directPath;
+      delete node.mediaKey;
+      delete node.url;
+      clone[property] = node;
+      return clone as T;
+    }
+
+    return clone as T;
+  }
+
+  private unprotectStored(message: StoredMessage, transportJid: string): StoredMessage {
+    if (!this.cacheVault) return message;
+    const text = message.text
+      ? this.cacheVault.decrypt("message_text", transportJid, message.text)
+      : undefined;
+    const filename = message.media?.filename
+      ? this.cacheVault.decrypt("message_media_filename", transportJid, message.media.filename)
+      : undefined;
+    return {
+      ...message,
+      ...(text !== undefined ? { text } : {}),
+      ...(message.media ? {
+        media: {
+          ...message.media,
+          ...(filename !== undefined ? { filename } : {}),
+        },
+      } : {}),
+    };
   }
 }
 
