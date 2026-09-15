@@ -1,4 +1,4 @@
-// Agent context note: Creates production Baileys sockets with passive presence, no local send echoes/retries, exact-ID acknowledgement waits, app-state resync, and full direct-chat history bootstrap for the encrypted V3 cache. Tests: test/outbound-acknowledgement.test.mjs, test/core-session-client.test.mjs, and test/on-demand-history.test.mjs. Never resend messages that bypassed confirmation; history remains filtered before persistence by HardenedMessageStore.
+// Agent context note: Creates production Baileys sockets with passive presence, no local send echoes/retries, exact-ID acknowledgement waits, app-state resync, and full direct-chat history bootstrap only when registering a new encrypted V3 companion. Tests: test/outbound-acknowledgement.test.mjs, test/core-session-client.test.mjs, and test/on-demand-history.test.mjs. Never resend messages that bypassed confirmation; history remains filtered before persistence by HardenedMessageStore.
 import makeWASocket, { ALL_WA_PATCH_NAMES, Browsers, type WAMessage } from "baileys";
 import type { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import type { SocketEvents, SocketFactory, WhatsAppSocket } from "./socketTypes.js";
@@ -9,15 +9,20 @@ export class BaileysSocketFactory implements SocketFactory {
   ) {}
 
   async create(): Promise<WhatsAppSocket> {
+    // Baileys encodes requireFullSync in the companion registration payload.
+    // Requesting it again while reopening an already-paired device can change
+    // the login profile of that device without renegotiating registration.
+    // Existing companions therefore reconnect normally; a fresh pairing asks
+    // the phone for the full-history bootstrap once at registration time.
+    const requestFullHistory = !this.auth.isPaired();
     const socket = makeWASocket({
       auth: this.auth.state,
       logger: silentLogger as never,
       browser: Browsers.appropriate("Desktop"),
       markOnlineOnConnect: false,
-      // V3 is a personal knowledge connector: request the companion-device
-      // full-history bootstrap at registration time and explicitly accept FULL
-      // history notifications. Baileys rc14 otherwise drops FULL by default.
-      syncFullHistory: true,
+      syncFullHistory: requestFullHistory,
+      // Keep accepting FULL notifications after the registration socket
+      // restarts, because the replacement socket is already considered paired.
       shouldSyncHistoryMessage: () => true,
       ...SAFE_OUTBOUND_SOCKET_POLICY,
       shouldIgnoreJid: (jid) =>
