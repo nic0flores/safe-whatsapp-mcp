@@ -19,7 +19,7 @@ function Invoke-NativeChecked {
     }
 }
 
-Write-Host "[1/6] Installing exact dependency tree..."
+Write-Host "[1/6] Installing exact dependency tree and pinned Baileys pairing patch..."
 Invoke-NativeChecked npm.cmd ci
 
 Write-Host "[2/6] TypeScript typecheck..."
@@ -28,11 +28,12 @@ Invoke-NativeChecked npm.cmd run typecheck
 Write-Host "[3/6] Building..."
 Invoke-NativeChecked npm.cmd run build
 
-Write-Host "[4/6] Running hardened V2 encrypted-cache tests..."
+Write-Host "[4/6] Running hardened V2 encrypted-cache + pairing-refresh tests..."
 Invoke-NativeChecked node --test `
     test/chat-allowlist.test.mjs `
     test/hardened-persistence.test.mjs `
     test/cache-encryption.test.mjs `
+    test/baileys-pairing-refresh.test.mjs `
     test/mcp-tools.test.mjs `
     test/core-config-storage.test.mjs `
     test/application.test.mjs `
@@ -58,5 +59,5 @@ foreach ($name in $forbidden) {
     }
 }
 
-Write-Host "HARDENED V2 ENCRYPTED CACHE WINDOWS GATE: PASS" -ForegroundColor Green
-Write-Host "Note: the complete suite must also pass on Linux/macOS CI before pairing a primary WhatsApp account."
+Write-Host "HARDENED V2 PAIRING-REFRESH WINDOWS GATE: PASS" -ForegroundColor Green
+Write-Host "Note: hardened CI must also pass on Linux/macOS before retrying pairing on a primary WhatsApp account."
