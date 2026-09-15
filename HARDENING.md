@@ -1,62 +1,84 @@
-# Hardened read-only fork — V1
+# Hardened read-only fork — V2 encrypted cache
 
-This branch is pinned to upstream commit `fe29a1e6505fdaa82d6d2003d954d07d04773d46` and intentionally narrows the original project before it is paired with a primary personal WhatsApp account.
+This work is based on upstream commit `fe29a1e6505fdaa82d6d2003d954d07d04773d46`. V1 established a five-tool read-only MCP surface, explicit E.164 allowlisting, hard-disabled outbound behavior, and clean production dependencies. V2 moves the privacy boundary down into persistence and encrypts retained human content at rest.
 
 ## Current gate status
 
-**NOT READY FOR PRIMARY WHATSAPP PAIRING.**
+**CANDIDATE — DO NOT PAIR A PRIMARY WHATSAPP ACCOUNT UNTIL ALL V2 GATES ARE GREEN.**
 
-The first Windows bootstrap incorrectly continued after native commands returned non-zero exit codes. That defect is now addressed by `scripts/verify-hardened-windows.ps1`, which checks every native exit code explicitly. The remaining dependency audit findings must be repaired and the hardened gate must print `HARDENED V1 WINDOWS GATE: PASS` before pairing.
+Required before pairing:
+
+- `HARDENED V2 ENCRYPTED CACHE WINDOWS GATE: PASS` on the target Windows machine;
+- complete hardened CI green on Ubuntu and macOS, Node 22 and 24;
+- `npm audit --omit=dev` reports zero known production vulnerabilities.
 
 ## Security invariants
 
 - MCP exposes **five read-only tools only**: status, list allowed chats, read allowed chat, fetch older messages for an allowed chat, and search inside an allowed chat.
-- No MCP send, draft, browser-review, media-download, media-resource, or resync tool is exposed.
-- Upstream send/review services remain compiled in V1 for a smaller patch, but both the application and runtime config hard-disable text and media sending regardless of environment flags.
-- The CLI exposes no `--enable-send` or `--enable-media-send` path.
-- Only direct chats whose canonical E.164 number appears in `SAFE_WHATSAPP_MCP_ALLOWED_DIRECT_E164` are returned or readable.
-- Groups are denied in V1.
-- Global message search is denied; every search requires an explicit allowlisted `chatId`.
+- No MCP send, draft, browser-review, media-download, media-resource, or whole-account resync tool is exposed.
+- Upstream send/review internals remain compiled for compatibility, but application/runtime gates force text and media sending off and the CLI exposes no send-enabling flags.
+- Only direct chats whose canonical E.164 number appears in `SAFE_WHATSAPP_MCP_ALLOWED_DIRECT_E164` may reach the public read surface.
+- The same allowlist is enforced **before persistence**. Groups, denied direct chats, and unresolved/unauthorized LIDs are discarded before SQLite.
 - Empty/missing allowlist fails closed.
-- Default local retention is reduced to 3 days and 100 messages per chat.
-- The package is marked `private: true` to prevent accidental npm publication.
-- Production dependencies must pass `npm audit --omit=dev` with zero known vulnerabilities.
+- Global message search is denied; every search requires an explicit allowlisted `chatId`.
+- Default retention is 3 days and 100 messages per chat.
+- The package is `private: true` and production dependencies must pass `npm audit --omit=dev` cleanly.
 
-## Important residual risks
+## Encrypted cache design
 
-1. The upstream send/review implementation still exists in the binary, although V1 makes it unreachable from MCP and forces its runtime gates off. V2 should delete that code path entirely.
-2. Baileys is still an unofficial WhatsApp linked-device implementation. This fork cannot remove WhatsApp account-policy risk.
-3. Message text in the upstream SQLite cache remains plaintext in V1. Use full-disk encryption (BitLocker/FileVault/LUKS) and do **not** pair a primary account yet. Cache encryption is a separate V2 change so it can be reviewed independently.
-4. Recent WhatsApp synchronization may still ingest non-allowlisted account data into the local upstream cache even though MCP cannot expose it. V2 should move filtering/encryption down to persistence.
+Authentication credentials and retained chat content use **independent OS credential-store keys**.
+
+- WhatsApp auth: AES-256-GCM using the upstream credential vault.
+- Cache content: AES-256-GCM using a separate cache vault and a separate HKDF domain (`safe-whatsapp-mcp/cache-encryption/v1`).
+- Cache envelopes use fresh 96-bit nonces and 128-bit authentication tags.
+- AAD binds encrypted content to its field and stable identity/message identifier so ciphertext cannot be freely moved between records.
+- Human-readable identity names, message text/captions, and retained filenames are encrypted before they reach SQLite.
+- Direct-chat names are stored once as encrypted identity display names rather than duplicated as plaintext chat titles.
+- Downloadable-media capabilities (`directPath`, `mediaKey`, URL) are removed before persistence in hardened read-only mode.
+- E.164 numbers, normalized WhatsApp JIDs, opaque IDs, timestamps, and bounded non-human media metadata remain plaintext because they are required for allowlisting, pagination, deletion, and retention.
+- Search over encrypted messages is performed only inside one allowlisted chat by decrypting the bounded retained set in memory.
+
+## Plaintext-cache migration
+
+The first V2 encrypted-cache open establishes `encrypted_cache_epoch=1`.
+
+Before that marker is written, V2:
+
+1. preserves only the already-encrypted auth tables (`auth_credentials`, `auth_keys`);
+2. empties every other local SQLite table, including unknown/future state tables;
+3. checkpoints the WAL;
+4. runs `VACUUM` to scrub freed plaintext pages;
+5. checkpoints again;
+6. writes the encrypted-cache epoch marker; and
+7. creates a separate cache-vault key in the OS credential store.
+
+A crash before the epoch marker safely repeats the scrub on the next start. V2 does not attempt to re-encrypt legacy plaintext cache rows in place.
 
 ## Allowlist
 
-Set a comma-separated list before launching the MCP server, for example:
+Set a comma-separated canonical E.164 list before starting the MCP server, for example:
 
 ```text
 SAFE_WHATSAPP_MCP_ALLOWED_DIRECT_E164=+56911111111,+56922222222
 ```
 
-Use canonical E.164 only. Do not use display names.
+Do not use display names or group IDs.
 
-## Windows repair + verification
+## Verification
 
-From the checked-out `hardening/read-only-v1` branch:
+Windows:
 
 ```powershell
-.\scripts\repair-security-deps-windows.ps1
+.\scripts\verify-hardened-windows.ps1
 ```
 
-The repair script:
+The fail-closed Windows gate performs `npm ci`, typecheck, build, hardened allowlist/persistence/cache-encryption tests, production dependency audit, and an explicit forbidden-tool scan.
 
-1. fast-forwards the local branch from GitHub;
-2. pins `sharp` to `0.35.4` and overrides `qs` to `^6.16.0`;
-3. regenerates `npm-shrinkwrap.json` without running package scripts;
-4. runs the fail-closed Windows hardening gate;
-5. commits and pushes the dependency repair only if every gate succeeds.
+`.github/workflows/hardened-ci.yml` independently runs the complete suite and production audit on Ubuntu/macOS with Node 22 and 24, plus a dedicated encrypted-persistence invariant job.
 
-The Windows gate includes typecheck, build, hardened security tests, production dependency audit, and an explicit forbidden-tool scan.
+## Residual risks
 
-## Full-suite CI
-
-`.github/workflows/hardened-ci.yml` runs the complete upstream test suite plus the production audit on Linux and macOS, along with a dedicated hardening-surface job. Treat V1 as verified only after those jobs are green as well.
+1. **Baileys remains unofficial.** No code hardening can remove WhatsApp/Meta account-policy or protocol-change risk. A secondary-number trial remains prudent before using a primary account.
+2. **Legacy outbound implementation remains compiled.** It is unreachable from the hardened MCP/CLI and runtime gates are forced off, but a later V3 could physically delete those modules to reduce code surface further.
+3. **Metadata remains plaintext by design.** E.164/JIDs, timestamps, IDs and limited media metadata are not content-encrypted. Full-disk encryption such as BitLocker is still recommended as defense in depth.
+4. **At-rest encryption does not protect an unlocked compromised host.** A process running as the user may be able to access the OS credential store and decrypt the local cache.
