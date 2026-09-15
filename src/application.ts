@@ -1,4 +1,4 @@
-// Agent context note: Composes encrypted auth, retained reads, guarded resync, acknowledged sends, and broker-owned browser reviews. Tests: application/account lifecycle, message-resync, send-service, review-manager, and package smoke. Keep WhatsApp the only transport, partial history non-authoritative, and reviewed preview bytes immutable.
+// Agent context note: Composes encrypted auth/cache reads with the legacy send/review internals hard-disabled behind a five-tool read-only MCP surface. Tests: application/account lifecycle, hardened privacy, send/review compatibility, and package smoke. Keep WhatsApp the only transport, content untrusted, and outbound gates false.
 import type { AnyMessageContent, WAUrlInfo } from "baileys";
 import type { MasterKeyStore } from "./auth/masterKeyStore.js";
 import { JsonLineAuditLogger } from "./audit/redactedAudit.js";
@@ -202,10 +202,10 @@ class ClientReadOperations implements WhatsAppReadOperations {
       sendEnabled: false,
       mediaSendEnabled: false,
       credentialsAtRest: "aes-256-gcm+os-credential-vault",
-      messageCacheAtRest: "plaintext-private-permissions",
+      messageCacheAtRest: "aes-256-gcm+os-cache-vault",
       transport: "unofficial-baileys",
       pairingCommand: "safewhatsapp connect",
-      chatAccessPolicy: "explicit-direct-e164-allowlist",
+      chatAccessPolicy: "explicit-direct-e164-allowlist-before-persistence",
       allowedDirectChatCount: this.allowlist.size,
       groupsExposedToMcp: false,
       globalSearchEnabled: false,
