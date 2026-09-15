@@ -136,7 +136,7 @@ test("offline status is structured and purge preserves only user outbox content"
   assert.equal(parsed.paired, false);
   assert.equal(parsed.connected, false);
   assert.equal(parsed.credentialsAtRest, "aes-256-gcm+os-credential-vault");
-  assert.equal(parsed.messageCacheAtRest, "plaintext-private-permissions");
+  assert.equal(parsed.messageCacheAtRest, "aes-256-gcm+os-cache-vault");
 
   await fs.writeFile(path.join(state, "config.json"), "{}\n");
   await fs.writeFile(path.join(state, "audit.log"), "audit\n");
