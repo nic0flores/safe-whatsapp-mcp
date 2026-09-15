@@ -1,4 +1,4 @@
-// Agent context note: Covers safe, atomic Codex registration orchestration and standalone self-verification on supported standalone platforms; Windows skips this suite because standalone packaging is not implemented there. The JSONL transport itself is tested in test/codex-app-server.test.mjs; update this note after meaningful changes.
+﻿// Agent context note: Covers safe, atomic Codex registration orchestration and standalone self-verification on supported standalone platforms; Windows skips this suite because standalone packaging is not implemented there. The JSONL transport itself is tested in test/codex-app-server.test.mjs; update this note after meaningful changes.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
@@ -160,7 +160,7 @@ setupCodexTest("rerunning setup upgrades an older exact tool allowlist without c
     const options = fixture.options({ enableSend: true, enableMediaSend: true });
     await setupCodex(options);
     fixture.server().enabled_tools = fixture.server().enabled_tools.filter(
-      (name) => name !== "resync_whatsapp_messages",
+      (name) => name !== "search_whatsapp_messages",
     );
     fixture.client.syncEffective();
 
