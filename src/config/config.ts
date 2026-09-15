@@ -1,4 +1,4 @@
-// Agent context note: Validates local runtime settings and resolves hardened read-only defaults. Tests: test/core-config-storage.test.mjs. V1 must never enable outbound WhatsApp transport from environment flags.
+// Agent context note: Validates local runtime settings and resolves hardened read-only defaults. Tests: test/core-config-storage.test.mjs. V3 retains a long encrypted message history for general-purpose personal search while outbound WhatsApp transport stays permanently disabled.
 import { readJsonFile } from "../storage/privateFiles.js";
 import type { StatePaths } from "../storage/paths.js";
 import { SafeWhatsAppError } from "../errors.js";
@@ -28,12 +28,12 @@ export interface SafeWhatsAppConfig {
 }
 
 export const DEFAULT_LOCAL_CONFIG: Required<LocalConfig> = Object.freeze({
-  retentionDays: 3,
-  maxMessagesPerChat: 100,
+  retentionDays: 3_650,
+  maxMessagesPerChat: 10_000,
   pendingTtlMinutes: 10,
   connectionTimeoutSeconds: 15,
-  syncTimeoutSeconds: 15,
-  idleTimeoutSeconds: 60,
+  syncTimeoutSeconds: 120,
+  idleTimeoutSeconds: 600,
   inlineMediaMiB: 8,
   maxMediaMiB: 25,
 });
@@ -43,7 +43,7 @@ const CONFIG_MAXIMUMS: Required<LocalConfig> = Object.freeze({
   maxMessagesPerChat: 10_000,
   pendingTtlMinutes: 1_440,
   connectionTimeoutSeconds: 600,
-  syncTimeoutSeconds: 120,
+  syncTimeoutSeconds: 600,
   idleTimeoutSeconds: 3_600,
   inlineMediaMiB: 8,
   maxMediaMiB: 25,
