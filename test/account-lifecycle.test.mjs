@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { SafeWhatsAppApplication } from "../dist/application.js";
 import { SqliteAuthState } from "../dist/auth/sqliteAuthState.js";
+import { ALLOWED_DIRECT_E164_ENV } from "../dist/security/chatAllowlist.js";
 import { ensureStateOwnership } from "../dist/storage/accountState.js";
 import { SqliteState } from "../dist/storage/database.js";
 import { StatePaths } from "../dist/storage/paths.js";
@@ -56,7 +57,7 @@ test("unpaired connect cleanup runs before fresh auth hydration and preserves co
   }
 });
 
-test("connect cleanup preserves QR-paired credentials and account state", async () => {
+test("connect cleanup preserves QR-paired credentials and allowlisted account state", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "safe-wa-account-qr-paired-"));
   const paths = new StatePaths(root);
   const masterKeyStore = new MemoryMasterKeyStore();
@@ -64,6 +65,8 @@ test("connect cleanup preserves QR-paired credentials and account state", async 
   const state = await SqliteState.open(paths);
   await seedEveryAccountTable(state, false, masterKeyStore, qrAccountIdentity());
   state.close();
+  const previousAllowlist = process.env[ALLOWED_DIRECT_E164_ENV];
+  process.env[ALLOWED_DIRECT_E164_ENV] = "+919999999999";
 
   let application;
   try {
@@ -87,6 +90,8 @@ test("connect cleanup preserves QR-paired credentials and account state", async 
     await fs.access(paths.credentialVaultFile);
   } finally {
     await application?.close().catch(() => undefined);
+    if (previousAllowlist === undefined) delete process.env[ALLOWED_DIRECT_E164_ENV];
+    else process.env[ALLOWED_DIRECT_E164_ENV] = previousAllowlist;
     await fs.rm(root, { recursive: true, force: true });
   }
 });
