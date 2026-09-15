@@ -1,4 +1,4 @@
-// Agent context note: Composes the locked production stack, durable outbound-failure journal, and OS-vault-backed account lifecycle. Tests: test/core-lifecycle.test.mjs, test/account-lifecycle.test.mjs, and test/message-resync.test.mjs. Quiesce writes before cleanup, require ownership for destructive work, and preserve config/outbox; update this note after meaningful changes.
+// Agent context note: Composes the locked production stack, hardened allowlisted persistence, durable outbound-failure journal, and OS-vault-backed account lifecycle. Tests: test/core-lifecycle.test.mjs, test/account-lifecycle.test.mjs, and hardened persistence tests. Quiesce writes before cleanup, require ownership for destructive work, and preserve config/outbox; update this note after meaningful changes.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { SafeWhatsAppConfig } from "../config/config.js";
@@ -6,8 +6,10 @@ import { retireStoredCredentialVault } from "../auth/credentialVault.js";
 import { KeyringMasterKeyStore, type MasterKeyStore } from "../auth/masterKeyStore.js";
 import { SqliteAuthState } from "../auth/sqliteAuthState.js";
 import { IdentityStore } from "../messages/identityStore.js";
-import { MessageStore } from "../messages/messageStore.js";
 import { OutboundFailureJournal } from "../replies/outboundFailureJournal.js";
+import { DirectChatAllowlist } from "../security/chatAllowlist.js";
+import { HardenedMessageStore } from "../security/hardenedMessageStore.js";
+import { scrubNonAllowlistedPersistence } from "../security/persistencePrivacy.js";
 import {
   assertStateOwnership,
   clearAccountBoundState,
@@ -29,6 +31,7 @@ export interface CoreOptions {
   syncTimeoutMs?: number;
   clearResidualIfUnpaired?: boolean;
   masterKeyStore?: MasterKeyStore;
+  chatAllowlist?: DirectChatAllowlist;
 }
 
 export interface UnlinkResult {
@@ -45,9 +48,10 @@ export class WhatsAppCore {
   private constructor(
     readonly state: SqliteState,
     readonly auth: SqliteAuthState,
-    readonly messages: MessageStore,
+    readonly messages: HardenedMessageStore,
     readonly sessions: SessionManager,
     readonly client: WhatsAppClient,
+    readonly chatAllowlist: DirectChatAllowlist,
     private readonly lock: ProcessLock,
     private readonly router?: EventRouter,
     readonly outboundFailures?: OutboundFailureJournal,
@@ -74,8 +78,10 @@ export class WhatsAppCore {
         await auth.close();
         auth = await SqliteAuthState.open(state, keyStore);
       }
+      const chatAllowlist = options.chatAllowlist ?? DirectChatAllowlist.fromEnvironment();
+      scrubNonAllowlistedPersistence(state, chatAllowlist);
       const identities = new IdentityStore(state);
-      const messages = new MessageStore(state, identities, config);
+      const messages = new HardenedMessageStore(state, identities, config, chatAllowlist);
       const outboundFailures = new OutboundFailureJournal(state);
       const router = new EventRouter(auth, messages, outboundFailures);
       const factory = new BaileysSocketFactory(auth);
@@ -101,6 +107,7 @@ export class WhatsAppCore {
         messages,
         sessions,
         client,
+        chatAllowlist,
         lock,
         router,
         outboundFailures,
