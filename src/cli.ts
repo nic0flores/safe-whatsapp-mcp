@@ -1,4 +1,4 @@
-// Agent context note: Provides pairing, read-only Codex setup, status, broker-proxied STDIO serve, direct disconnect, and guarded purge commands. Tests: CLI, broker, Codex setup, browser QR, account lifecycle, and package smoke. V1 exposes no CLI path that enables WhatsApp sending.
+// Agent context note: Provides pairing, read-only Codex setup, encrypted-cache status, broker-proxied STDIO serve, direct disconnect, and guarded two-vault purge commands. Tests: CLI, broker, Codex setup, browser QR, account lifecycle, and package smoke. Expose no CLI path that enables WhatsApp sending.
 import process from "node:process";
 import { SafeWhatsAppApplication } from "./application.js";
 import {
@@ -211,8 +211,8 @@ async function purgeCommand(input: string[]): Promise<void> {
   await withBrokerStateTakeover(paths, () =>
     purgeLocalState(paths, { abandonCredentialKey }));
   const keyCleanup = abandonCredentialKey
-    ? "requested deletion of its OS credential-vault key and discarded the non-secret retry descriptor if deletion could not be confirmed"
-    : "requested deletion of its OS credential-vault key";
+    ? "requested deletion of its independent OS auth/cache vault keys and discarded non-secret retry descriptors if deletion could not be confirmed"
+    : "requested deletion of its independent OS auth/cache vault keys";
   process.stdout.write(
     `LOCAL-ONLY PURGE: removed Safe WhatsApp MCP state under ${paths.display()}, ${keyCleanup}; preserved ${paths.display(paths.outboxDir)}. This does not log out WhatsApp. Unlink first when possible, or remove this device in WhatsApp → Settings → Linked Devices on your phone.\n`,
   );
